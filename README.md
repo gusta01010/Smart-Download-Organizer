@@ -77,7 +77,7 @@ Contributions are welcome! If you have ideas, bug fixes, or new features:
 
 Open an issue on GitHub or message me on Discord:
 
-*   Discord: @gusta01010
+*   Discord: sonic_8783
 
 ## License
 
