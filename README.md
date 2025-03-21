@@ -1,9 +1,7 @@
-# Smart Download Organizer
-
 <!-- Centered SDO -->
-<p align="center">
-  <span style="font-size: 3em; font-weight: bold; color: #4285f4; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);">SDO</span>
-</p>
+<div align="left">
+    <h1 style="">Smart Download Organizer</h1>
+</div>
 
 <!-- Centered License Shield -->
 <div align="center">
