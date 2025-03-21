@@ -4,21 +4,59 @@ const TITLE_MATCH_THRESHOLD = 60;
 const CONTENT_MATCH_THRESHOLD = 50;
 const MAX_HISTORY_ITEMS = 3;
 const NOTIFICATION_TIMEOUT = 15000;
+const MAX_CACHE_PER_TAB = 3; // Maximum number of pages to cache per tab
 
 let pendingDownloads = new Map();
 let downloadNotifications = new Map();
 let suggestCallbacks = new Map();
-let contentAnalysisResults = new Map(); // Store content analysis results
+let keywordCache = {}; // Store keyword analysis results
 
 chrome.runtime.onInstalled.addListener(() => {
     console.log("Download Organizer Extension installed");
+    // Initialize empty cache
+    chrome.storage.local.set({ keywordCache: {} });
 });
 
+// Listen for keyword analysis results from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === "contentAnalysis") {
-        // Store content analysis result, keyed by tab ID (or initiator for downloads)
-        console.log("Received content analysis from tab:", sender.tab ? sender.tab.id : "no tab");
-        contentAnalysisResults.set(sender.tab ? sender.tab.id : message.initiator, message.content);
+    if (message.action === "keywordAnalysis") {
+        console.log("Received keyword analysis from tab:", sender.tab ? sender.tab.id : "no tab");
+        
+        // Get the current cache
+        chrome.storage.local.get('keywordCache', function(data) {
+            let cache = data.keywordCache || {};
+            const tabId = sender.tab ? String(sender.tab.id) : message.tabId;
+            
+            // Initialize cache for this tab if it doesn't exist
+            if (!cache[tabId]) {
+                cache[tabId] = [];
+            }
+            
+            // Add new results to the cache
+            cache[tabId].unshift({
+                url: message.url,
+                title: message.title,
+                results: message.results,
+                timestamp: Date.now()
+            });
+            
+            // Keep only MAX_CACHE_PER_TAB entries per tab (FIFO)
+            if (cache[tabId].length > MAX_CACHE_PER_TAB) {
+                cache[tabId] = cache[tabId].slice(0, MAX_CACHE_PER_TAB);
+            }
+            
+            // Clean up any tabs that haven't been accessed in 24 hours
+            const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+            for (const [cachedTabId, entries] of Object.entries(cache)) {
+                if (entries.length > 0 && entries[0].timestamp < oneDayAgo) {
+                    delete cache[cachedTabId];
+                }
+            }
+            
+            // Save updated cache
+            chrome.storage.local.set({ keywordCache: cache });
+            console.log("Updated keyword cache for tab:", tabId);
+        });
     }
 });
 
@@ -53,7 +91,10 @@ async function processDownload(downloadItem) {
 
     const bestMatch = matchResults[0];
     // Check filename, url, title, and content
-    if (bestMatch.filenameMatchPercentage >= MATCH_THRESHOLD || bestMatch.urlMatchPercentage >= MATCH_THRESHOLD || bestMatch.titleMatchPercentage >= TITLE_MATCH_THRESHOLD || bestMatch.contentMatchPercentage >= CONTENT_MATCH_THRESHOLD) {
+    if (bestMatch.filenameMatchPercentage >= MATCH_THRESHOLD || 
+        bestMatch.urlMatchPercentage >= MATCH_THRESHOLD || 
+        bestMatch.titleMatchPercentage >= TITLE_MATCH_THRESHOLD || 
+        bestMatch.contentMatchPercentage >= CONTENT_MATCH_THRESHOLD) {
         console.log(`Using best match automatically: ${bestMatch.name} (Filename: ${Math.round(bestMatch.filenameMatchPercentage)}%, URL: ${Math.round(bestMatch.urlMatchPercentage)}%, Title: ${Math.round(bestMatch.titleMatchPercentage)}%, Content: ${Math.round(bestMatch.contentMatchPercentage)}%, Overall: ${Math.round(bestMatch.matchPercentage)}%)`);
         const suggestedFilename = getSuggestedFilename(downloadItem, bestMatch);
         callSuggestSafely(downloadItem.id, { filename: suggestedFilename, conflictAction: 'uniquify' });
@@ -84,8 +125,6 @@ function callSuggestSafely(downloadId, suggestion) {
     }
 }
 
-
-
 async function analyzeDownload(downloadItem, gameConfigs) {
     const parsedConfigs = gameConfigs.map(config => ({
         ...config,
@@ -101,7 +140,6 @@ async function analyzeDownload(downloadItem, gameConfigs) {
         return filenameResults; // Return immediately if high filename match
     }
 
-
     // --- 2. Try to get tab information ---
     let tabInfo = null;
     if (downloadItem.initiator) {
@@ -114,104 +152,126 @@ async function analyzeDownload(downloadItem, gameConfigs) {
         }
     }
 
-    // --- 3. Analyze based on tab info or history ---
-    let historyItems = [];
-    if (!tabInfo) {
-        historyItems = await getRecentHistory(MAX_HISTORY_ITEMS);
+    // --- 3. Get cached keyword data ---
+    let keywordData = [];
+    try {
+        const cache = await chrome.storage.local.get('keywordCache');
+        if (tabInfo && tabInfo.id) {
+            // Get keyword data for this tab
+            keywordData = (cache.keywordCache && cache.keywordCache[String(tabInfo.id)]) || [];
+            console.log(`Found ${keywordData.length} cached entries for tab ${tabInfo.id}`);
+        } else {
+            // If no tab info, try to gather recent data from all tabs
+            const allTabData = [];
+            if (cache.keywordCache) {
+                Object.values(cache.keywordCache).forEach(tabEntries => {
+                    tabEntries.forEach(entry => {
+                        allTabData.push(entry);
+                    });
+                });
+                
+                // Sort by timestamp (newest first) and take the most recent MAX_HISTORY_ITEMS
+                allTabData.sort((a, b) => b.timestamp - a.timestamp);
+                keywordData = allTabData.slice(0, MAX_HISTORY_ITEMS);
+                console.log(`Using ${keywordData.length} most recent entries from all tabs`);
+            }
+        }
+    } catch (error) {
+        console.error("Error accessing keyword cache:", error);
     }
 
     // --- 4. Analyze URLs and Titles ---
+    let historyItems = [];
+    if (!tabInfo) {
+        historyItems = await getRecentHistory(MAX_HISTORY_ITEMS);
+        console.log("History Items:", historyItems);
+    }
+    
     const urlResults = await analyzeUrls(downloadItem.url, downloadItem.referrer, tabInfo, historyItems, parsedConfigs);
-    const highTitleMatchResult = urlResults.find(r => r.titleMatchPercentage >= TITLE_MATCH_THRESHOLD);
-    if (highTitleMatchResult) {
-        console.log(`High title match detected for ${highTitleMatchResult.name} (${Math.round(highTitleMatchResult.titleMatchPercentage)}%), skipping content analysis if content threshold not also met.`);
-        // DON'T return yet, we need to check content and combine results
-    }
-
-
-    // --- 5. Analyze Page Content (Always, but give priority to tabInfo) ---
-    let contentResults = [];
-    if (tabInfo) {
-        // Use content analysis result if available, otherwise, request it
-        if (contentAnalysisResults.has(tabInfo.id)) {
-          const content = contentAnalysisResults.get(tabInfo.id);
-          contentResults = await analyzePageContent([{title: tabInfo.title, url: tabInfo.url, content}], parsedConfigs);
-          contentAnalysisResults.delete(tabInfo.id);  //consume it
-        } else {
-           // Inject content script to get the content (if not already retrieved)
-            try{
-                await injectContentScript(tabInfo.id, downloadItem.initiator); // Inject and wait
-            } catch (error){
-                console.error("Failed to inject content script:", error);
-            }
-            if(contentAnalysisResults.has(tabInfo.id)){
-                const content = contentAnalysisResults.get(tabInfo.id);
-                contentResults = await analyzePageContent([{ title: tabInfo.title, url: tabInfo.url, content }], parsedConfigs);
-                contentAnalysisResults.delete(tabInfo.id);
-            } else {
-              console.warn("Content analysis not available for tab:", tabInfo.id);
-              contentResults = await analyzePageContent([], parsedConfigs); // Use empty array as fallback
-            }
-        }
-    } else {
-        // Use history and content analysis results
-        const itemsToAnalyze = [];
-        for (const item of historyItems) {
-            if (contentAnalysisResults.has(item.id)) {
-                itemsToAnalyze.push({...item, content: contentAnalysisResults.get(item.id)});
-                contentAnalysisResults.delete(item.id);
-            } else {
-                itemsToAnalyze.push(item); //If no content, use the item.  analyzePageContent will handle.
-            }
-        }
-      contentResults = await analyzePageContent(itemsToAnalyze, parsedConfigs);
-
-    }
-    const highContentMatchResult = contentResults.find(r => r.contentMatchPercentage >= CONTENT_MATCH_THRESHOLD);
-
+    
+    // --- 5. Analyze Cached Keyword Data ---
+    const contentResults = analyzeKeywordData(keywordData, parsedConfigs);
+    
     // --- 6. Combine Results ---
-    let combinedResults = combineResults(filenameResults, urlResults); // Combine filename and URL/Title
-    combinedResults = combineResults(combinedResults, contentResults);   // Combine with content results
-
-    if (highContentMatchResult) {
-        console.log(`High content match detected for ${highContentMatchResult.name} (${Math.round(highContentMatchResult.contentMatchPercentage)}%).`);
-    }
+    let combinedResults = combineResults(filenameResults, urlResults);
+    combinedResults = combineResults(combinedResults, contentResults);
 
     combinedResults.sort((a, b) => b.matchPercentage - a.matchPercentage);
     return combinedResults;
-
 }
 
-// NEW FUNCTION: Analyze the filename
 function analyzeFilename(filename, parsedConfigs) {
     const normalizedFilename = filename.toLowerCase();
     const results = [];
-
     for (const config of parsedConfigs) {
         let matchCount = 0;
         for (const keyword of config.keywordList) {
-            if (isKeywordInText(normalizedFilename, keyword)) {
+            if (normalizedFilename.includes(keyword)) {
+                console.debug(`Match found: Keyword "${keyword}" found in filename: ${filename} (direct match)`);
                 matchCount++;
             }
         }
-
-        // Calculate percentage based on the number of matched keywords relative to total keywords
         const filenameMatchPercentage = config.keywordList.length > 0 ? Math.min(100, (matchCount / config.keywordList.length) * 100) : 0;
-
         results.push({
             name: config.name,
             downloadPath: config.downloadPath,
             filenameMatchPercentage,
-            matchPercentage: filenameMatchPercentage, // Initially, overall match is filename match
-            urlMatchPercentage: 0, // Initialize to 0
-            titleMatchPercentage: 0, // Initialize to 0,
-            contentMatchPercentage: 0 // Initialize content percentage as well, even if not calculated here.
+            matchPercentage: filenameMatchPercentage,
+            urlMatchPercentage: 0,
+            titleMatchPercentage: 0,
+            contentMatchPercentage: 0
         });
     }
     return results;
 }
 
-//Combine Filename and Other results
+// New function to analyze cached keyword data
+function analyzeKeywordData(keywordData, parsedConfigs) {
+    const results = [];
+    const totalMatchesPerConfig = {}; // Store total matches for each config
+
+    // Initialize totalMatchesPerConfig
+    for (const config of parsedConfigs) {
+        totalMatchesPerConfig[config.name] = 0;
+    }
+
+    // 1. Aggregate Total Matches Across All Pages
+    for (const page of keywordData) {
+        for (const config of parsedConfigs) {
+            const configResult = page.results[config.name];
+            if (configResult) {
+                totalMatchesPerConfig[config.name] += configResult.totalMatches;
+            }
+        }
+    }
+
+    // 2. Calculate Relative Percentage
+    let grandTotalMatches = 0;
+    for (const configName in totalMatchesPerConfig) {
+        grandTotalMatches += totalMatchesPerConfig[configName];
+    }
+
+    for (const config of parsedConfigs) {
+        const configTotalMatches = totalMatchesPerConfig[config.name];
+        const contentMatchPercentage = grandTotalMatches > 0
+            ? (configTotalMatches / grandTotalMatches) * 100
+            : 0; // Avoid division by zero
+
+        results.push({
+            name: config.name,
+            downloadPath: config.downloadPath,
+            contentMatchPercentage,
+            contentMatchCount: configTotalMatches, // Keep this for debugging/info
+            matchPercentage: contentMatchPercentage, // Overall match is now content match
+            urlMatchPercentage: 0,
+            titleMatchPercentage: 0,
+            filenameMatchPercentage: 0
+        });
+    }
+
+    return results;
+}
+
 function combineResults(filenameResults, otherResults) {
     const combined = [...filenameResults]; // Start with filename results
 
@@ -219,37 +279,38 @@ function combineResults(filenameResults, otherResults) {
     for (const otherResult of otherResults) {
         const existing = combined.find(r => r.name === otherResult.name);
         if (existing) {
-            // Update URL and title percentages, and recalculate overall matchPercentage
-            existing.urlMatchPercentage = Math.max(existing.urlMatchPercentage, otherResult.urlMatchPercentage || 0); // Ensure 0 if undefined
+            // Update percentages and take the max for each metric
+            existing.urlMatchPercentage = Math.max(existing.urlMatchPercentage, otherResult.urlMatchPercentage || 0);
             existing.titleMatchPercentage = Math.max(existing.titleMatchPercentage, otherResult.titleMatchPercentage || 0);
-            existing.contentMatchPercentage = Math.max(existing.contentMatchPercentage, otherResult.contentMatchPercentage || 0); // Take max of content percentages
-            existing.matchPercentage = Math.max(existing.filenameMatchPercentage, existing.urlMatchPercentage, existing.titleMatchPercentage, existing.contentMatchPercentage); // Include content in overall max
-
+            existing.contentMatchPercentage = Math.max(existing.contentMatchPercentage, otherResult.contentMatchPercentage || 0);
+            existing.matchPercentage = Math.max(
+                existing.filenameMatchPercentage,
+                existing.urlMatchPercentage,
+                existing.titleMatchPercentage,
+                existing.contentMatchPercentage
+            );
         } else {
-            //This part should never happen as filename should contain every name
             combined.push(otherResult);
         }
     }
     return combined;
 }
 
-
-
 async function getTabInfo(initiator) {
     return new Promise((resolve, reject) => {
         // Try to find the tab based on the initiator URL
-        chrome.tabs.query({}, (tabs) => { // Query ALL tabs
-            const matchedTab = tabs.find(tab => tab.url && initiator && tab.url.startsWith(initiator.split('?')[0]));  //Basic URL Matching
+        chrome.tabs.query({}, (tabs) => {
+            const matchedTab = tabs.find(tab => tab.url && initiator && tab.url.startsWith(initiator.split('?')[0]));
 
             if (!matchedTab) {
                 reject(new Error("No matching tab found."));
                 return;
             }
 
-            // Inject content script to get the title
+            // Get the title
             chrome.scripting.executeScript({
                 target: { tabId: matchedTab.id },
-                func: () => document.title, // Get the title directly
+                func: () => document.title,
             }, (results) => {
                 if (chrome.runtime.lastError) {
                     reject(chrome.runtime.lastError);
@@ -267,31 +328,29 @@ async function getTabInfo(initiator) {
 
 async function injectContentScript(tabId, initiator) {
     return new Promise((resolve, reject) => {
-      chrome.scripting.executeScript({
-        target: { tabId: tabId },
-        files: ['content-script.js']
-      }, () => {
-          if(chrome.runtime.lastError){
-              reject(chrome.runtime.lastError);
-          } else {
-            // Send initiator information to content script
-            chrome.tabs.sendMessage(tabId, {action: "setInitiator", initiator: initiator}).catch(err => {
-                console.warn("Tab might have closed before message could be sent:", err); //This is not critical
-            });
-                resolve();  //Resolve after injection, not after analysis
-          }
-      });
+        chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ['content-script.js']
+        }, () => {
+            if (chrome.runtime.lastError) {
+                reject(chrome.runtime.lastError);
+            } else {
+                // Send initiator information to content script
+                chrome.tabs.sendMessage(tabId, { action: "setInitiator", initiator: initiator }).catch(err => {
+                    console.warn("Tab might have closed before message could be sent:", err);
+                });
+                resolve();
+            }
+        });
     });
 }
-
-
 
 async function getRecentHistory(count) {
     return new Promise((resolve) => {
         chrome.history.search({
             text: '',
             maxResults: count * 3,
-            startTime: Date.now() - (7 * 24 * 60 * 60 * 1000)
+            startTime: Date.now() - (7 * 24 * 60 * 60 * 1000) // Last 7 days
         }, (historyItems) => {
             const filteredItems = historyItems
                 .filter(item => !item.url.startsWith('chrome://') &&
@@ -301,9 +360,8 @@ async function getRecentHistory(count) {
                 .slice(0, count);
 
             // Add tab ID for content analysis lookup
-            const itemsWithIds = filteredItems.map(item => ({...item, id: `history-${item.visitId}`})); //Unique ID
+            const itemsWithIds = filteredItems.map(item => ({ ...item, id: `history-${String(item.visitId)}` }));
             resolve(itemsWithIds);
-
         });
     });
 }
@@ -311,52 +369,47 @@ async function getRecentHistory(count) {
 async function analyzeUrls(url, referrer, tabInfo, historyItems, parsedConfigs) {
     const urls = [url, referrer];
     if (tabInfo) {
-        urls.push(tabInfo.url);  // Add tab URL if available
+        urls.push(tabInfo.url);
     } else {
-        urls.push(...historyItems.map(item => item.url)); // Add history URLs
+        urls.push(...historyItems.slice(0, MAX_HISTORY_ITEMS).map(item => item.url));
     }
     const filteredUrls = urls.filter(Boolean);
 
     const titles = [];
     if (tabInfo) {
-        titles.push(tabInfo.title); // Add the tab title
+        titles.push(tabInfo.title);
     } else {
-        titles.push(...historyItems.map(item => item.title)); // Add history titles
+        titles.push(...historyItems.slice(0, MAX_HISTORY_ITEMS).map(item => item.title));
     }
     const filteredTitles = titles.filter(Boolean);
-
+    
     const results = [];
-
     for (const config of parsedConfigs) {
         let urlMatchCount = 0;
         let titleMatchCount = 0;
-
         for (const urlToCheck of filteredUrls) {
             const normalizedUrl = urlToCheck.toLowerCase();
             for (const keyword of config.keywordList) {
-                if (isKeywordInText(normalizedUrl, keyword)) {
+                if (normalizedUrl.includes(keyword)) {
+                    console.debug(`Match found: Keyword "${keyword}" found in url: ${urlToCheck} (direct match)`);
                     urlMatchCount++;
-                    break; // Important: Only count each URL once per config
+                    break; // Only count each URL once per config
                 }
             }
         }
-
         for (const titleToCheck of filteredTitles) {
-            const normalizedTitle = titleToCheck?.toLowerCase() || '';
+            const normalizedTitle = titleToCheck.toLowerCase();
             for (const keyword of config.keywordList) {
-                if (isKeywordInText(normalizedTitle, keyword)) {
+                if (normalizedTitle.includes(keyword)) {
+                    console.debug(`Match found: Keyword "${keyword}" found in title: ${titleToCheck} (direct match)`);
                     titleMatchCount++;
-                    // Don't break here; count all title matches
+                    // Count all title matches per keyword
                 }
             }
         }
-
-        const urlMatchPercentage = filteredUrls.length > 0 ? Math.min(100, (urlMatchCount / filteredUrls.length) * 100) : 0; // Changed logic
+        const urlMatchPercentage = filteredUrls.length > 0 ? Math.min(100, (urlMatchCount / filteredUrls.length) * 100) : 0;
         const titleMatchPercentage = filteredTitles.length > 0 ? Math.min(100, (titleMatchCount / (filteredTitles.length * config.keywordList.length)) * 100) : 0;
-
-
-        console.log(`Match Percentage for ${config.name} - URLs: ${urlMatchPercentage}% (Match Count: ${urlMatchCount}, URLs Checked: ${filteredUrls.length}), Titles: ${titleMatchPercentage}% (Match Count: ${titleMatchCount}, Titles Checked: ${filteredTitles.length})`);
-
+        
         results.push({
             name: config.name,
             downloadPath: config.downloadPath,
@@ -364,66 +417,12 @@ async function analyzeUrls(url, referrer, tabInfo, historyItems, parsedConfigs) 
             urlMatchCount,
             titleMatchPercentage,
             titleMatchCount,
-            matchPercentage: Math.max(urlMatchPercentage, titleMatchPercentage), //Max of URL and Title,
-            contentMatchPercentage: 0 //Initialize content percentage here as well.
-        });
-    }
-
-    return results;
-}
-
-function isKeywordInText(text, keyword) {
-    if (text.includes(keyword)) { return true; }
-    const variations = [
-        keyword.replace(/\s+/g, '-'), keyword.replace(/\s+/g, '_'),
-        keyword.replace(/\s+/g, '+'), keyword.replace(/\s+/g, '%20'),
-        keyword.replace(/-/g, ' '), keyword.replace(/_/g, ' '),
-        keyword.replace(/\+/g, ' ')
-    ];
-    for (const variation of variations) { if (text.includes(variation)) { return true; } }
-    return false;
-}
-
-async function analyzePageContent(items, parsedConfigs) {
-    const results = [];
-
-    for (const config of parsedConfigs) {
-        let totalContentMatches = 0;
-        let matchingItemsCount = 0;
-
-        for (const item of items) {
-            let itemMatched = false; // Track if the item matched any keyword
-            const content = item.content || ''; // Use empty string if content is not available
-            const combinedText = (item.title || '') + ' ' + content; //Combine title and content
-            const normalizedContent = combinedText.toLowerCase();
-
-            for (const keyword of config.keywordList) {
-                if (isKeywordInText(normalizedContent, keyword)) {
-                    totalContentMatches++;
-                    itemMatched = true; // Mark the item as matched
-                }
-            }
-            if(itemMatched){
-              matchingItemsCount++;
-            }
-        }
-        // Calculate contentMatchPercentage based on *items* that matched, not total matches.
-        const contentMatchPercentage = items.length > 0 ? Math.min(100, (matchingItemsCount / items.length) * 100) : 0;
-
-        results.push({
-            name: config.name,
-            downloadPath: config.downloadPath,
-            contentMatchPercentage,
-            contentMatchCount: totalContentMatches, // Still track total matches for debugging
-            matchPercentage: contentMatchPercentage, // Initialize overall match with content match
-            urlMatchPercentage: 0,  // Ensure these are initialized
-            titleMatchPercentage: 0,
-            filenameMatchPercentage: 0
+            matchPercentage: Math.max(urlMatchPercentage, titleMatchPercentage),
+            contentMatchPercentage: 0
         });
     }
     return results;
 }
-
 
 function showDownloadPathNotification(downloadItem, options) {
     if (options.length > 0 && (options[0].matchPercentage >= MATCH_THRESHOLD)) {
@@ -432,7 +431,6 @@ function showDownloadPathNotification(downloadItem, options) {
         return;
     }
 
-
     try {
         chrome.notifications.create({
             type: 'basic',
@@ -440,7 +438,7 @@ function showDownloadPathNotification(downloadItem, options) {
             title: 'Choose Download Location',
             message: `Where would you like to save "${downloadItem.filename.split('/').pop()}"?`,
             buttons: [
-                ...(options.length > 0 ? [{ title: `${options[0].name} (${Math.round(options[0].matchPercentage)}%)` }] : []), // Use overall matchPercentage in notification buttons
+                ...(options.length > 0 ? [{ title: `${options[0].name} (${Math.round(options[0].matchPercentage)}%)` }] : []),
                 ...(options.length > 1 ? [{ title: `${options[1].name} (${Math.round(options[1].matchPercentage)}%)` }] : []),
                 { title: 'Use Default Folder' }
             ],
@@ -457,7 +455,10 @@ function showDownloadPathNotification(downloadItem, options) {
                     chrome.notifications.clear(notificationId, () => {
                         if (chrome.runtime.lastError) { console.log("Notification already closed:", chrome.runtime.lastError.message); }
                         const notificationInfo = downloadNotifications.get(notificationId);
-                        if (notificationInfo) { processDownloadChoice(notificationInfo.downloadId, null); downloadNotifications.delete(notificationId); }
+                        if (notificationInfo) { 
+                            processDownloadChoice(notificationInfo.downloadId, null); 
+                            downloadNotifications.delete(notificationId); 
+                        }
                     });
                 } catch (error) { console.error("Error clearing notification:", error); }
             }, NOTIFICATION_TIMEOUT);
@@ -475,9 +476,10 @@ async function processDownloadChoice(downloadId, chosenIndex) {
         return;
     }
 
-    const { downloadItem, suggest } = pendingDownload;
-    const matchResults = (await analyzeDownload(downloadItem, (await chrome.storage.sync.get('gameConfigs')).gameConfigs));
-    pendingDownloads.delete(downloadId); // Moved up here
+    const { downloadItem } = pendingDownload;
+    const { gameConfigs } = await chrome.storage.sync.get('gameConfigs');
+    const matchResults = await analyzeDownload(downloadItem, gameConfigs);
+    pendingDownloads.delete(downloadId);
 
     if (chosenIndex === null || chosenIndex === undefined || !matchResults) {
         console.log(`ProcessDownloadChoice: Default location chosen.`);
@@ -527,4 +529,41 @@ chrome.notifications.onClosed.addListener((notificationId) => {
     if (!notificationInfo) { return; }
     processDownloadChoice(notificationInfo.downloadId, null);
     downloadNotifications.delete(notificationId);
+});
+
+// Inject the content script into tabs when they are updated
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'complete' && tab.url && 
+        !tab.url.startsWith('chrome://') && 
+        !tab.url.startsWith('edge://') && 
+        !tab.url.startsWith('about:') && 
+        tab.url !== 'about:blank') {
+        
+        chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ['content-script.js']
+        }).catch(error => {
+            console.warn(`Could not inject content script into tab ${tabId}:`, error);
+        });
+    }
+});
+
+// Remover cache da aba quando ela for fechada
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+    chrome.storage.local.get('keywordCache', (data) => {
+        let cache = data.keywordCache || {};
+        if (cache[String(tabId)]) {
+            delete cache[String(tabId)];
+            chrome.storage.local.set({ keywordCache: cache }, () => {
+                console.log("Cleaned cache for tab:", tabId);
+            });
+        }
+    });
+});
+
+// Limpar todo o cache quando a extensão for encerrada (ao fechar o navegador)
+chrome.runtime.onSuspend.addListener(() => {
+    chrome.storage.local.remove('keywordCache', () => {
+        console.log("Cleaned.");
+    });
 });

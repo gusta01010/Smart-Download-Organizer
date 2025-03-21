@@ -10,6 +10,7 @@
     "storage",
     "notifications",
     "webNavigation",
+    "scripting",
     "activeTab"
   ],
   "background": {
