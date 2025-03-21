@@ -101,7 +101,7 @@
     <h2>How to Use This Extension</h2>
 
     <h3>Quick Start</h3>
-    <p>This extension automatically redirects downloads to specific folders based on the website, content, or other criteria you define. Sorting automatically.</p>
+    <p>This extension automatically redirects downloads to specific folders based on the keywords and criteria you define. Sorting is done automatically.</p>
 
     <h3>Setting Up Custom Folders</h3>
     <ol>
@@ -111,36 +111,41 @@
       <li>Click "Save Settings" to apply your changes.</li>
     </ol>
 
-    <h3>Configuring Keywords and Website Patterns</h3>
-    <p>Keywords and website patterns help the extension identify where a download should be saved:</p>
+    <h3>Configuring Keywords</h3>
+    <p>Keywords help the extension identify where a download should be saved:</p>
     <ul>
-      <li>Add multiple keywords separated by commas.</li>
+      <li>Add multiple keywords, separated by commas.</li>
       <li>Examples:</li>
         <ul>
           <li>For Minecraft 1.12.2 mods: <code>1.12.2</code></li>
           <li>For The Sims 4 mods: <code>the sims 4, ts4, thesims4, thesims</code></li>
-          <li>For Blender assets from a specific site: <code>blender, asset, 3d model</code></li>
-           <li>For PDFs related to "Project Alpha": <code>Project Alpha, report, documentation, pdf</code></li>
+          <li>For Blender assets: <code>blender, asset, 3d model</code></li>
+          <li>For PDFs related to "Project Alpha": <code>Project Alpha, report, documentation, pdf</code></li>
         </ul>
     </ul>
 
     <h3>How Matching Works</h3>
-    <p>When you download a file, the extension:</p>
+    <p>When you download a file, the extension checks the following, in order:</p>
     <ol>
-      <li>Checks if the website matches any patterns (including wildcards) you've defined.</li>
-      <li>If a website pattern matches, or if no pattern is set, it searches for keywords in the download URL, filename, and page content.</li>
-      <li>Calculates a confidence score (percentage match) for each configuration.</li>
-      <li>Selects the configuration with the highest confidence score above a threshold (this threshold is internal and ensures reasonable accuracy).</li>
-      <li>If the best match is above the threshold, redirects the download to your specified folder.</li>
-      <li>If a match is found, but below the threshold, it notifies you with a suggested folder.  Clicking the notification saves the file in the default download folder.</li>  <!-- Corrected the notification behavior -->
-      <li>If no matches are found (0% confidence), the file is saved in your default download folder.</li>
+      <li><strong>Filename:</strong> It first checks the filename for your keywords. If a strong match is found here (above 75%), the file is immediately saved to the specified folder.</li>
+      <li><strong>Page Title:</strong> If the filename doesn't provide a strong match, the extension checks the title of the webpage where the download started.  A strong title match (above 60%) will redirect the download.</li>
+      <li><strong>URL:</strong> Next, it examines the download URL, the referrer URL (the page linking to the download), and URLs from your recent browsing history, looking for keywords.</li>
+      <li><strong>Page Content:</strong> Finally, if no strong matches are found, the extension analyzes the content of the webpage where the download started (or pages from your recent browsing history).</li>
+      <li><strong>Confidence Score:</strong>  A score is calculated for each configuration based on these checks.</li>
+      <li><strong>Redirection:</strong>
+        <ul>
+            <li>If the best match's score is high enough (based on the checks above), the download goes to the configured folder.</li>
+            <li>If the score is below the threshold but a match is still found, you'll get a notification suggesting a folder. Click to confirm, or ignore to use the default location.</li>
+            <li>If no matches are found, the file goes to your default downloads folder.</li>
+        </ul>
+      </li>
     </ol>
 
     <h3>Troubleshooting</h3>
     <p><strong>Downloads not redirecting?</strong></p>
     <ul>
       <li>Make sure your download paths are valid, end with a slash (<code>\</code> or <code>/</code>), and include the drive letter (e.g., <code>E:\Folder\</code>).  <strong style="color:red;">They MUST be on the same drive as your default download folder.</strong></li>
-      <li>Add more specific keywords or website patterns for better matching.</li>
+      <li>Add more specific keywords for better matching.</li>
       <li>Ensure your keywords are relevant to the files you're trying to organize.</li>
     </ul>
 
@@ -148,7 +153,7 @@
     <ul>
       <li><b>Pro Tip: Avoid using generalized words that are commonly found on websites, such as "its", "car", or other common nouns.</b></li>
       <li><b>Pro Tip: NEVER use the same keyword in different configurations.</b></li>
-      <li>More specific keywords and website patterns yield better results.</li>
+      <li>More specific keywords yield better results.</li>
       <li>Check the browser console (F12) for troubleshooting logs (errors or informational messages).</li>
     </ul>
     This project will be open source forever, you are free to check it out more on <a href="https://github.com/gusta01010/Smart-Download-Organizer">https://github.com/gusta01010/Smart-Download-Organizer</a><br>Also a big credit to Pixel perfect for the extension icon: <a href="https://www.flaticon.com/free-icons/download" title="download icons">Download icons created by Pixel perfect - Flaticon</a><br>
