@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Smart Download Organizer</title>
+  <style>
+    body {
+      width: 400px;
+      font-family: Arial, sans-serif;
+      padding: 10px;
+    }
+    .config { /* Renamed class for generalization */
+      margin-bottom: 15px;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+    input[type="text"] {
+      width: 100%;
+      margin-bottom: 5px;
+      padding: 5px;
+    }
+    button {
+      padding: 8px;
+      background: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 5px;
+    }
+    button:hover {
+      background: #3367d6;
+    }
+    .add-button {
+      margin-top: 10px;
+    }
+    .help-button {
+      background: #f1f1f1;
+      color: #333;
+      font-weight: bold;
+      border-radius: 50%;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      float: right;
+    }
+    .help-section {
+      display: none;
+      margin-top: 15px;
+      padding: 15px;
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+    .help-section h3 {
+      margin-top: 15px;
+      margin-bottom: 5px;
+      color: #4285f4;
+    }
+    .help-section p {
+      margin: 5px 0;
+    }
+    .help-section ul {
+      margin: 5px 0;
+      padding-left: 20px;
+    }
+    .help-section code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+    .back-to-settings {
+      margin-top: 10px;
+    }
+    .warning {
+      background-color: #ffdddd;
+      border: 2px solid #ff0000;
+      color: #ff0000;
+      padding: 10px;
+      margin-bottom: 15px;
+      border-radius: 5px;
+      font-weight: bold;
+      text-align: center; /* Center the warning text */
+    }
+  </style>
+</head>
+<body>
+  <div id="main-interface">
+    <h2>Smart Download Organizer <button id="show-help" class="help-button">?</button></h2>
+
+    <div class="warning">
+      IMPORTANT: Currently, only folders on the SAME DRIVE as your default download folder are supported.  If your default download folder is on C:, you MUST specify paths on C:.  If it's on E:, use paths on E:.  Cross-drive redirection is not yet implemented.
+    </div>
+
+    <div id="configs-container"></div>
+    <button id="add-config" class="add-button">Add New Configuration</button>  <!-- More general button text -->
+    <button id="save-configs">Save Settings</button>
+  </div>
+
+  <div id="help-section" class="help-section">
+    <h2>How to Use This Extension</h2>
+
+    <h3>Quick Start</h3>
+    <p>This extension automatically redirects downloads to specific folders based on the website, content, or other criteria you define. Sorting automatically.</p>
+
+    <h3>Setting Up Custom Folders</h3>
+    <ol>
+      <li>Click "Add New Configuration" to create a new rule.</li>
+      <li>Enter a descriptive name for this rule (e.g., "Minecraft Mods", "Blender Assets", "Design Documents").</li>
+      <li>Set the download path where matching downloads should be saved (e.g., <code>C:\Games\.Minecraft\mods\</code>, <code>D:\Assets\Blender\</code>, <code>E:\Projects\ClientA\Docs\</code>). <strong style="color: red;">Important: Ensure this path is on the SAME DRIVE as your default download folder.</strong></li>
+      <li>Click "Save Settings" to apply your changes.</li>
+    </ol>
+
+    <h3>Configuring Keywords and Website Patterns</h3>
+    <p>Keywords and website patterns help the extension identify where a download should be saved:</p>
+    <ul>
+      <li>Add multiple keywords separated by commas.</li>
+      <li>Examples:</li>
+        <ul>
+          <li>For Minecraft 1.12.2 mods: <code>1.12.2</code></li>
+          <li>For The Sims 4 mods: <code>the sims 4, ts4, thesims4, thesims</code></li>
+          <li>For Blender assets from a specific site: <code>blender, asset, 3d model</code></li>
+           <li>For PDFs related to "Project Alpha": <code>Project Alpha, report, documentation, pdf</code></li>
+        </ul>
+    </ul>
+
+    <h3>How Matching Works</h3>
+    <p>When you download a file, the extension:</p>
+    <ol>
+      <li>Checks if the website matches any patterns (including wildcards) you've defined.</li>
+      <li>If a website pattern matches, or if no pattern is set, it searches for keywords in the download URL, filename, and page content.</li>
+      <li>Calculates a confidence score (percentage match) for each configuration.</li>
+      <li>Selects the configuration with the highest confidence score above a threshold (this threshold is internal and ensures reasonable accuracy).</li>
+      <li>If the best match is above the threshold, redirects the download to your specified folder.</li>
+      <li>If a match is found, but below the threshold, it notifies you with a suggested folder.  Clicking the notification saves the file in the default download folder.</li>  <!-- Corrected the notification behavior -->
+      <li>If no matches are found (0% confidence), the file is saved in your default download folder.</li>
+    </ol>
+
+    <h3>Troubleshooting</h3>
+    <p><strong>Downloads not redirecting?</strong></p>
+    <ul>
+      <li>Make sure your download paths are valid, end with a slash (<code>\</code> or <code>/</code>), and include the drive letter (e.g., <code>E:\Folder\</code>).  <strong style="color:red;">They MUST be on the same drive as your default download folder.</strong></li>
+      <li>Add more specific keywords or website patterns for better matching.</li>
+      <li>Ensure your keywords are relevant to the files you're trying to organize.</li>
+    </ul>
+
+    <h3>Tips</h3>
+    <ul>
+      <li><b>Pro Tip: Avoid using generalized words that are commonly found on websites, such as "its", "car", or other common nouns.</b></li>
+      <li><b>Pro Tip: NEVER use the same keyword in different configurations.</b></li>
+      <li>More specific keywords and website patterns yield better results.</li>
+      <li>Check the browser console (F12) for troubleshooting logs (errors or informational messages).</li>
+    </ul>
+    This project will be open source forever, you are free to check it out more on <a href="https://github.com/gusta01010/Smart-Download-Organizer">https://github.com/gusta01010/Smart-Download-Organizer</a><br>Also a big credit to Pixel perfect for the extension icon: <a href="https://www.flaticon.com/free-icons/download" title="download icons">Download icons created by Pixel perfect - Flaticon</a><br>
+    <button id="back-to-settings" class="back-to-settings">Back to Settings</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
