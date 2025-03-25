@@ -142,26 +142,30 @@ async function analyzeDownload(downloadItem, gameConfigs) {
 
     // --- 2. Try to get tab information ---
     let tabInfo = null;
+    let tabCacheData = [];
+    
     if (downloadItem.initiator) {
         try {
             tabInfo = await getTabInfo(downloadItem.initiator);
             console.log("Tab Info:", tabInfo);
+            
+            // Get cached data for this tab
+            if (tabInfo && tabInfo.id) {
+                const cache = await chrome.storage.local.get('keywordCache');
+                tabCacheData = (cache.keywordCache && cache.keywordCache[String(tabInfo.id)]) || [];
+                console.log(`Found ${tabCacheData.length} cached entries for tab ${tabInfo.id}`);
+            }
         } catch (error) {
             console.error("Error getting tab info:", error);
-            // Fallback to history
+            // We'll handle fallback logic below
         }
     }
 
-    // --- 3. Get cached keyword data ---
-    let keywordData = [];
-    try {
-        const cache = await chrome.storage.local.get('keywordCache');
-        if (tabInfo && tabInfo.id) {
-            // Get keyword data for this tab
-            keywordData = (cache.keywordCache && cache.keywordCache[String(tabInfo.id)]) || [];
-            console.log(`Found ${keywordData.length} cached entries for tab ${tabInfo.id}`);
-        } else {
-            // If no tab info, try to gather recent data from all tabs
+    // --- 3. If no tab cache data, try to find relevant cache data ---
+    if (tabCacheData.length === 0) {
+        try {
+            const cache = await chrome.storage.local.get('keywordCache');
+            // Collect all cached entries from all tabs
             const allTabData = [];
             if (cache.keywordCache) {
                 Object.values(cache.keywordCache).forEach(tabEntries => {
@@ -172,25 +176,34 @@ async function analyzeDownload(downloadItem, gameConfigs) {
                 
                 // Sort by timestamp (newest first) and take the most recent MAX_HISTORY_ITEMS
                 allTabData.sort((a, b) => b.timestamp - a.timestamp);
-                keywordData = allTabData.slice(0, MAX_HISTORY_ITEMS);
-                console.log(`Using ${keywordData.length} most recent entries from all tabs`);
+                tabCacheData = allTabData.slice(0, MAX_HISTORY_ITEMS);
+                console.log(`Using ${tabCacheData.length} most recent entries from all tabs`);
             }
+        } catch (error) {
+            console.error("Error accessing keyword cache:", error);
         }
-    } catch (error) {
-        console.error("Error accessing keyword cache:", error);
     }
 
-    // --- 4. Analyze URLs and Titles ---
+    // --- 4. Analyze URLs and Titles from tab cache ---
+    // Only fall back to browser history if we have no tab cache data
     let historyItems = [];
-    if (!tabInfo) {
+    if (tabCacheData.length === 0 && !tabInfo) {
         historyItems = await getRecentHistory(MAX_HISTORY_ITEMS);
-        console.log("History Items:", historyItems);
+        console.log("Using browser history items:", historyItems);
     }
     
-    const urlResults = await analyzeUrls(downloadItem.url, downloadItem.referrer, tabInfo, historyItems, parsedConfigs);
+    // Use tab cache data for URL and title analysis if available
+    const urlResults = await analyzeUrls(
+        downloadItem.url, 
+        downloadItem.referrer, 
+        tabInfo, 
+        historyItems,
+        tabCacheData,
+        parsedConfigs
+    );
     
     // --- 5. Analyze Cached Keyword Data ---
-    const contentResults = analyzeKeywordData(keywordData, parsedConfigs);
+    const contentResults = analyzeKeywordData(tabCacheData, parsedConfigs);
     
     // --- 6. Combine Results ---
     let combinedResults = combineResults(filenameResults, urlResults);
@@ -228,44 +241,59 @@ function analyzeFilename(filename, parsedConfigs) {
 // New function to analyze cached keyword data
 function analyzeKeywordData(keywordData, parsedConfigs) {
     const results = [];
-    const totalMatchesPerConfig = {}; // Store total matches for each config
+    const totalMatchesPerConfig = {};
+    const zeroMatchCounts = {}; // Track how many pages have zero matches for each config
 
-    // Initialize totalMatchesPerConfig
+    // Initialize data structures
     for (const config of parsedConfigs) {
         totalMatchesPerConfig[config.name] = 0;
+        zeroMatchCounts[config.name] = 0;
     }
 
-    // 1. Aggregate Total Matches Across All Pages
+    // 1. Aggregate Total Matches and Count Zero Matches
     for (const page of keywordData) {
         for (const config of parsedConfigs) {
             const configResult = page.results[config.name];
             if (configResult) {
                 totalMatchesPerConfig[config.name] += configResult.totalMatches;
+                if (configResult.totalMatches === 0) {
+                    zeroMatchCounts[config.name]++;
+                }
+            } else {
+                // If configResult is undefined (config not found on this page), count as a zero match
+                zeroMatchCounts[config.name]++;
             }
         }
     }
 
-    // 2. Calculate Relative Percentage
+    // 2. Calculate Grand Total
     let grandTotalMatches = 0;
     for (const configName in totalMatchesPerConfig) {
         grandTotalMatches += totalMatchesPerConfig[configName];
     }
 
+    // 3. Calculate and Apply Penalty
     for (const config of parsedConfigs) {
         const configTotalMatches = totalMatchesPerConfig[config.name];
-        const contentMatchPercentage = grandTotalMatches > 0
+        let contentMatchPercentage = grandTotalMatches > 0
             ? (configTotalMatches / grandTotalMatches) * 100
-            : 0; // Avoid division by zero
+            : 0;
+
+        // Apply the penalty for zero matches
+        const penaltyFactor = Math.pow(1.5, zeroMatchCounts[config.name]);
+        contentMatchPercentage /= penaltyFactor;
+
 
         results.push({
             name: config.name,
             downloadPath: config.downloadPath,
             contentMatchPercentage,
-            contentMatchCount: configTotalMatches, // Keep this for debugging/info
-            matchPercentage: contentMatchPercentage, // Overall match is now content match
+            contentMatchCount: configTotalMatches,
+            matchPercentage: contentMatchPercentage,
             urlMatchPercentage: 0,
             titleMatchPercentage: 0,
-            filenameMatchPercentage: 0
+            filenameMatchPercentage: 0,
+            zeroMatchPages: zeroMatchCounts[config.name] // For debugging/info
         });
     }
 
@@ -366,22 +394,57 @@ async function getRecentHistory(count) {
     });
 }
 
-async function analyzeUrls(url, referrer, tabInfo, historyItems, parsedConfigs) {
+async function analyzeUrls(url, referrer, tabInfo, historyItems, tabCacheData, parsedConfigs) {
+    // Start with base URLs
     const urls = [url, referrer];
+    
+    // Add tab URL if available
     if (tabInfo) {
         urls.push(tabInfo.url);
-    } else {
+    }
+    
+    // Add URLs from tab cache data
+    if (tabCacheData && tabCacheData.length > 0) {
+        tabCacheData.forEach(cacheItem => {
+            if (cacheItem.url) {
+                urls.push(cacheItem.url);
+            }
+        });
+    } 
+    // Only fallback to history items if we don't have any tab cache data
+    else if (historyItems && historyItems.length > 0) {
         urls.push(...historyItems.slice(0, MAX_HISTORY_ITEMS).map(item => item.url));
     }
-    const filteredUrls = urls.filter(Boolean);
-
+    
+    // Filter out empty values and limit to MAX_HISTORY_ITEMS
+    const filteredUrls = urls.filter(Boolean).slice(0, MAX_HISTORY_ITEMS);
+    
+    // Initialize titles array
     const titles = [];
+    
+    // Add tab title if available
     if (tabInfo) {
         titles.push(tabInfo.title);
-    } else {
+    }
+    
+    // Add titles from tab cache data
+    if (tabCacheData && tabCacheData.length > 0) {
+        tabCacheData.forEach(cacheItem => {
+            if (cacheItem.title) {
+                titles.push(cacheItem.title);
+            }
+        });
+    } 
+    // Only fallback to history items if we don't have any tab cache data
+    else if (historyItems && historyItems.length > 0) {
         titles.push(...historyItems.slice(0, MAX_HISTORY_ITEMS).map(item => item.title));
     }
-    const filteredTitles = titles.filter(Boolean);
+    
+    // Filter out empty values and limit to MAX_HISTORY_ITEMS
+    const filteredTitles = titles.filter(Boolean).slice(0, MAX_HISTORY_ITEMS);
+    
+    console.log("Analyzing URLs:", filteredUrls);
+    console.log("Analyzing titles:", filteredTitles);
     
     const results = [];
     for (const config of parsedConfigs) {
@@ -548,7 +611,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
 });
 
-// Remover cache da aba quando ela for fechada
+// Remove cache from tab when it's closed
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     chrome.storage.local.get('keywordCache', (data) => {
         let cache = data.keywordCache || {};
@@ -561,7 +624,7 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     });
 });
 
-// Limpar todo o cache quando a extensão for encerrada (ao fechar o navegador)
+// Clean all cache when the extension is terminated (when the browser is closed)
 chrome.runtime.onSuspend.addListener(() => {
     chrome.storage.local.remove('keywordCache', () => {
         console.log("Cleaned.");
