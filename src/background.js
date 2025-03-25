@@ -1,10 +1,11 @@
 // background.js
 const MATCH_THRESHOLD = 75;
 const TITLE_MATCH_THRESHOLD = 60;
-const CONTENT_MATCH_THRESHOLD = 50;
+const CONTENT_MATCH_THRESHOLD = 69;
 const MAX_HISTORY_ITEMS = 3;
 const NOTIFICATION_TIMEOUT = 15000;
 const MAX_CACHE_PER_TAB = 3; // Maximum number of pages to cache per tab
+const tabRelationships = new Map();
 
 let pendingDownloads = new Map();
 let downloadNotifications = new Map();
@@ -16,6 +17,14 @@ chrome.runtime.onInstalled.addListener(() => {
     // Initialize empty cache
     chrome.storage.local.set({ keywordCache: {} });
 });
+
+chrome.tabs.onCreated.addListener((tab) => {
+    if (tab.openerTabId) {
+        tabRelationships.set(tab.id, tab.openerTabId);
+        console.log(`Tab ${tab.id} opened from tab ${tab.openerTabId}`);
+    }
+});
+
 
 // Listen for keyword analysis results from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -131,86 +140,72 @@ async function analyzeDownload(downloadItem, gameConfigs) {
         keywordList: config.keywords.split(',').map(k => k.trim().toLowerCase())
     }));
 
-    // --- 1. Analyze Filename FIRST ---
+    // 1. Always check filename first
     const filenameResults = analyzeFilename(downloadItem.filename, parsedConfigs);
     const highFilenameMatch = filenameResults.find(r => r.filenameMatchPercentage >= MATCH_THRESHOLD);
     if (highFilenameMatch) {
-        console.log(`High filename match detected for ${highFilenameMatch.name} (${Math.round(highFilenameMatch.filenameMatchPercentage)}%), skipping further analysis.`);
-        filenameResults.sort((a, b) => b.filenameMatchPercentage - a.filenameMatchPercentage);
-        return filenameResults; // Return immediately if high filename match
+        return filenameResults.sort((a, b) => b.filenameMatchPercentage - a.filenameMatchPercentage);
     }
 
-    // --- 2. Try to get tab information ---
+    // 2. Try to find originating tab
     let tabInfo = null;
     let tabCacheData = [];
     
     if (downloadItem.initiator) {
         try {
             tabInfo = await getTabInfo(downloadItem.initiator);
-            console.log("Tab Info:", tabInfo);
-            
-            // Get cached data for this tab
-            if (tabInfo && tabInfo.id) {
-                const cache = await chrome.storage.local.get('keywordCache');
-                tabCacheData = (cache.keywordCache && cache.keywordCache[String(tabInfo.id)]) || [];
-                console.log(`Found ${tabCacheData.length} cached entries for tab ${tabInfo.id}`);
-            }
+            console.log("Found originating tab:", tabInfo);
         } catch (error) {
             console.error("Error getting tab info:", error);
-            // We'll handle fallback logic below
         }
     }
 
-    // --- 3. If no tab cache data, try to find relevant cache data ---
-    if (tabCacheData.length === 0) {
-        try {
-            const cache = await chrome.storage.local.get('keywordCache');
-            // Collect all cached entries from all tabs
-            const allTabData = [];
-            if (cache.keywordCache) {
-                Object.values(cache.keywordCache).forEach(tabEntries => {
-                    tabEntries.forEach(entry => {
-                        allTabData.push(entry);
-                    });
-                });
-                
-                // Sort by timestamp (newest first) and take the most recent MAX_HISTORY_ITEMS
-                allTabData.sort((a, b) => b.timestamp - a.timestamp);
-                tabCacheData = allTabData.slice(0, MAX_HISTORY_ITEMS);
-                console.log(`Using ${tabCacheData.length} most recent entries from all tabs`);
+    // 3. If no originating tab found, use active tab
+    if (!tabInfo) {
+        const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
+        if (tabs.length > 0) {
+            tabInfo = { id: tabs[0].id, url: tabs[0].url, title: tabs[0].title };
+            console.log("Using active tab as fallback:", tabInfo);
+        }
+    }
+
+    // 4. Get cache data for current tab
+    if (tabInfo?.id) {
+        const cache = await chrome.storage.local.get('keywordCache');
+        tabCacheData = (cache.keywordCache && cache.keywordCache[String(tabInfo.id)]) || [];
+        console.log(`Found ${tabCacheData.length} cached entries for tab ${tabInfo.id}`);
+
+        // 5. If not enough data, check parent tab
+        if (tabCacheData.length < MAX_CACHE_PER_TAB && tabRelationships.has(tabInfo.id)) {
+            const parentTabId = tabRelationships.get(tabInfo.id);
+            const parentTabData = (cache.keywordCache && cache.keywordCache[String(parentTabId)]) || [];
+            
+            if (parentTabData.length > 0) {
+                console.log(`Adding ${parentTabData.length} entries from parent tab ${parentTabId}`);
+                // Combine with current tab's data (newest first)
+                tabCacheData = [...tabCacheData, ...parentTabData]
+                    .sort((a, b) => b.timestamp - a.timestamp)
+                    .slice(0, MAX_CACHE_PER_TAB);
             }
-        } catch (error) {
-            console.error("Error accessing keyword cache:", error);
         }
     }
 
-    // --- 4. Analyze URLs and Titles from tab cache ---
-    // Only fall back to browser history if we have no tab cache data
-    let historyItems = [];
-    if (tabCacheData.length === 0 && !tabInfo) {
-        historyItems = await getRecentHistory(MAX_HISTORY_ITEMS);
-        console.log("Using browser history items:", historyItems);
-    }
-    
-    // Use tab cache data for URL and title analysis if available
+    // 6. Analyze the combined data
     const urlResults = await analyzeUrls(
         downloadItem.url, 
         downloadItem.referrer, 
         tabInfo, 
-        historyItems,
+        [], // No browser history
         tabCacheData,
         parsedConfigs
     );
     
-    // --- 5. Analyze Cached Keyword Data ---
     const contentResults = analyzeKeywordData(tabCacheData, parsedConfigs);
     
-    // --- 6. Combine Results ---
     let combinedResults = combineResults(filenameResults, urlResults);
     combinedResults = combineResults(combinedResults, contentResults);
 
-    combinedResults.sort((a, b) => b.matchPercentage - a.matchPercentage);
-    return combinedResults;
+    return combinedResults.sort((a, b) => b.matchPercentage - a.matchPercentage);
 }
 
 function analyzeFilename(filename, parsedConfigs) {
@@ -372,6 +367,8 @@ async function injectContentScript(tabId, initiator) {
         });
     });
 }
+
+
 
 async function getRecentHistory(count) {
     return new Promise((resolve) => {

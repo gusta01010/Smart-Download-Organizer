@@ -3,75 +3,338 @@
 <head>
   <title>Smart Download Organizer</title>
   <style>
+    :root {
+      --light-bg: #ffffff;
+      --light-text: #333333;
+      --light-box-bg: #f9f9f9;
+      --light-box-border: #dddddd;
+      --light-enabled-bg: #f0f8f0;
+      --light-disabled-bg: #fff0f0;
+      --light-button-bg: #4285f4;
+      --light-button-hover: #3367d6;
+      --light-save-bg: #4CAF50;
+      --light-save-hover: #45a049;
+      --light-remove-bg: #ff4444;
+      --light-remove-hover: #cc0000;
+      
+      --dark-bg: #1e1e1e;
+      --dark-text: #e0e0e0;
+      --dark-box-bg: #252525;
+      --dark-box-border: #444444;
+      --dark-enabled-bg: #1a2a1a;
+      --dark-disabled-bg: #2a1a1a;
+      --dark-button-bg: #3367d6;
+      --dark-button-hover: #254fa3;
+      --dark-save-bg: #2E7D32;
+      --dark-save-hover: #1B5E20;
+      --dark-remove-bg: #c62828;
+      --dark-remove-hover: #b71c1c;
+    }
+    
     body {
       width: 400px;
       font-family: Arial, sans-serif;
-      padding: 10px;
+      padding: 15px;
+      margin: 0;
+      background-color: var(--light-bg);
+      color: var(--light-text);
+      transition: background-color 0.3s, color 0.3s;
     }
-    .config { /* Renamed class for generalization */
+    
+    body.dark-mode {
+      background-color: var(--dark-bg);
+      color: var(--dark-text);
+    }
+    
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 10px;
       margin-bottom: 15px;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 5px;
+      border-bottom: 1px solid var(--light-box-border);
     }
-    input[type="text"] {
-      width: 100%;
+    
+    body.dark-mode .header {
+      border-bottom-color: var(--dark-box-border);
+    }
+    
+    .header h2 {
+      margin: 0;
+      font-size: 1.2em;
+    }
+    
+    .header-buttons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .theme-toggle {
+      width: 24px;
+      height: 24px;
+      background-size: contain;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-color: transparent;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      transition: transform 0.2s;
+    }
+    
+    .theme-toggle:hover {
+      transform: scale(1.1);
+    }
+    
+    .help-button {
+      width: 24px;
+      height: 24px;
+      background-color: var(--light-box-bg);
+      color: var(--light-text);
+      font-weight: bold;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.2s;
+    }
+    
+    body.dark-mode .help-button {
+      background-color: var(--dark-box-bg);
+      color: var(--dark-text);
+    }
+    
+    .help-button:hover {
+      background-color: var(--light-button-bg);
+      color: white;
+    }
+    
+    body.dark-mode .help-button:hover {
+      background-color: var(--dark-button-bg);
+    }
+    
+    .config-section {
+      margin: 10px 0;
+      border: 1px solid var(--light-box-border);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: all 0.3s;
+    }
+    
+    body.dark-mode .config-section {
+      border-color: var(--dark-box-border);
+    }
+    
+    .config-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 15px;
+      background-color: var(--light-enabled-bg);
+      border-bottom: 1px solid var(--light-box-border);
+    }
+    
+    body.dark-mode .config-header {
+      background-color: var(--dark-enabled-bg);
+      border-bottom-color: var(--dark-box-border);
+    }
+    
+    .config-header.disabled {
+      background-color: var(--light-disabled-bg);
+    }
+    
+    body.dark-mode .config-header.disabled {
+      background-color: var(--dark-disabled-bg);
+    }
+    
+    .config-title {
+      font-weight: bold;
+      margin: 0;
+      flex-grow: 1;
+    }
+    
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 20px;
+    }
+    
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: .4s;
+      border-radius: 20px;
+    }
+    
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 2px;
+      bottom: 2px;
+      background-color: white;
+      transition: .4s;
+      border-radius: 50%;
+    }
+    
+    input:checked + .slider {
+      background-color: #4CAF50;
+    }
+    
+    body.dark-mode input:checked + .slider {
+      background-color: #2E7D32;
+    }
+    
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+    
+    .config-content {
+      padding: 15px;
+      background-color: var(--light-box-bg);
+      transition: all 0.3s;
+    }
+    
+    body.dark-mode .config-content {
+      background-color: var(--dark-box-bg);
+    }
+    
+    .config-content.disabled {
+      opacity: 0.7;
+    }
+    
+    .form-group {
+      margin-bottom: 15px;
+    }
+    
+    .form-group label {
+      display: block;
       margin-bottom: 5px;
-      padding: 5px;
+      font-weight: bold;
     }
-    button {
+    
+    .form-group input[type="text"] {
+      width: 100%;
       padding: 8px;
-      background: #4285f4;
+      border: 1px solid var(--light-box-border);
+      border-radius: 4px;
+      box-sizing: border-box;
+      background-color: var(--light-bg);
+      color: var(--light-text);
+    }
+    
+    body.dark-mode .form-group input[type="text"] {
+      background-color: var(--dark-bg);
+      color: var(--dark-text);
+      border-color: var(--dark-box-border);
+    }
+    
+    .remove-btn {
+      display: block;
+      width: 100%;
+      padding: 8px;
+      background-color: var(--light-remove-bg);
       color: white;
       border: none;
       border-radius: 4px;
       cursor: pointer;
-      margin-right: 5px;
-    }
-    button:hover {
-      background: #3367d6;
-    }
-    .add-button {
-      margin-top: 10px;
-    }
-    .help-button {
-      background: #f1f1f1;
-      color: #333;
       font-weight: bold;
-      border-radius: 50%;
-      width: 30px;
-      height: 30px;
-      padding: 0;
-      float: right;
+      text-align: center;
+      transition: background-color 0.2s;
     }
-    .help-section {
-      display: none;
-      margin-top: 15px;
-      padding: 15px;
-      background: #f9f9f9;
-      border: 1px solid #ddd;
-      border-radius: 5px;
+    
+    body.dark-mode .remove-btn {
+      background-color: var(--dark-remove-bg);
     }
-    .help-section h3 {
-      margin-top: 15px;
-      margin-bottom: 5px;
-      color: #4285f4;
+    
+    .remove-btn:hover {
+      background-color: var(--light-remove-hover);
     }
-    .help-section p {
-      margin: 5px 0;
+    
+    body.dark-mode .remove-btn:hover {
+      background-color: var(--dark-remove-hover);
     }
-    .help-section ul {
-      margin: 5px 0;
-      padding-left: 20px;
+    
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 20px;
+      padding-top: 15px;
+      border-top: 1px solid var(--light-box-border);
     }
-    .help-section code {
-      background: #eee;
-      padding: 2px 4px;
-      border-radius: 3px;
+    
+    body.dark-mode .footer {
+      border-top-color: var(--dark-box-border);
     }
-    .back-to-settings {
-      margin-top: 10px;
+    
+    .add-btn {
+      padding: 8px 15px;
+      background: var(--light-button-bg);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background-color 0.2s;
     }
+    
+    body.dark-mode .add-btn {
+      background: var(--dark-button-bg);
+    }
+    
+    .add-btn:hover {
+      background: var(--light-button-hover);
+    }
+    
+    body.dark-mode .add-btn:hover {
+      background: var(--dark-button-hover);
+    }
+    
+    .save-btn {
+      padding: 8px 15px;
+      background: var(--light-save-bg);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background-color 0.2s;
+    }
+    
+    body.dark-mode .save-btn {
+      background: var(--dark-save-bg);
+    }
+    
+    .save-btn:hover {
+      background: var(--light-save-hover);
+    }
+    
+    body.dark-mode .save-btn:hover {
+      background: var(--dark-save-hover);
+    }
+    
     .warning {
       background-color: #ffdddd;
       border: 2px solid #ff0000;
@@ -80,21 +343,94 @@
       margin-bottom: 15px;
       border-radius: 5px;
       font-weight: bold;
-      text-align: center; /* Center the warning text */
+      text-align: center;
+    }
+    
+    body.dark-mode .warning {
+      background-color: #2a1a1a;
+      border-color: #c62828;
+      color: #ff8a80;
+    }
+    
+    .help-section {
+      display: none;
+      margin-top: 15px;
+      padding: 15px;
+      background: var(--light-box-bg);
+      border: 1px solid var(--light-box-border);
+      border-radius: 5px;
+    }
+    
+    body.dark-mode .help-section {
+      background: var(--dark-box-bg);
+      border-color: var(--dark-box-border);
+    }
+    
+    .help-section h3 {
+      margin-top: 15px;
+      margin-bottom: 5px;
+      color: #4285f4;
+    }
+    
+    body.dark-mode .help-section h3 {
+      color: #5d9eff;
+    }
+    
+    .help-section p {
+      margin: 5px 0;
+    }
+    
+    .help-section ul {
+      margin: 5px 0;
+      padding-left: 20px;
+    }
+    
+    .help-section code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+    
+    body.dark-mode .help-section code {
+      background: #333;
+      color: #e0e0e0;
+    }
+    
+    .back-to-settings {
+      margin-top: 10px;
+      padding: 8px 15px;
+      background: var(--light-button-bg);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    
+    body.dark-mode .back-to-settings {
+      background: var(--dark-button-bg);
     }
   </style>
 </head>
 <body>
   <div id="main-interface">
-    <h2>Smart Download Organizer <button id="show-help" class="help-button">?</button></h2>
+    <div class="header">
+      <h2>Smart Download Organizer</h2>
+      <div class="header-buttons">
+        <button id="theme-toggle" class="theme-toggle"></button>
+        <button id="show-help" class="help-button">?</button>
+      </div>
+    </div>
 
     <div class="warning">
-      IMPORTANT: Currently, only folders on the SAME DRIVE as your default download folder are supported.  If your default download folder is on C:, you MUST specify paths on C:.  If it's on E:, use paths on E:.  Cross-drive redirection is not yet implemented.
+      IMPORTANT: Currently, only folders on the SAME DRIVE as your default download folder are supported.
     </div>
 
     <div id="configs-container"></div>
-    <button id="add-config" class="add-button">Add New Configuration</button>  <!-- More general button text -->
-    <button id="save-configs">Save Settings</button>
+    
+    <div class="footer">
+      <button id="add-config" class="add-btn">Add New Configuration</button>
+      <button id="save-configs" class="save-btn">Save Settings</button>
+    </div>
   </div>
 
   <div id="help-section" class="help-section">
