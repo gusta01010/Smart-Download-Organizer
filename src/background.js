@@ -12,9 +12,283 @@ let downloadNotifications = new Map();
 let suggestCallbacks = new Map();
 let keywordCache = {}; // Store keyword analysis results
 
+// =================================================================
+// START: LLM Integration Code
+// =================================================================
+
+/**
+ * Creates the system and user prompts for the LLM based on the download context.
+ * This function is provided by the user.
+ */
+function createLLMMessages(downloadItem, context, enabledConfigs) {
+    const systemPrompt = `1. If file is between two conflicting rules: {RULE_NAME_A || RULE_NAME_B}
+2. If file does not apply any rule AND has a possibility of matching one rule: {NULL || RULE_NAME_A}
+3. If confident about a specific rule that matches criteria: {RULE_NAME_A}
+4. If it clearly does not match any rule, use not found rule: {NULL}`;
+
+    const rulesDescription = enabledConfigs.length > 0
+        ? enabledConfigs.map(config => {
+            const keywords = config.keywords.split(',').map(k => k.trim()).filter(Boolean);
+            return `Name: ['${config.name}']:\n- Looks for: [${keywords.join(', ')}]`;
+        }).join('\n')
+        : "No routing rules provided.";
+
+    const userPrompt = `You are an expert file organizer. Your task is to analyze the following download and decide where it should be saved based on a set of rules that must match the File purpose.
+
+[File]
+Downloaded Filename: "${downloadItem.filename}"
+Download Origin URLs: ${JSON.stringify(context.urls)}
+Download Origin Page Titles: ${JSON.stringify(context.titles)}
+
+[Routing rules]
+${rulesDescription}
+
+Questioning possibility: Does the file content really matches the content/purpose of a rule name?
+
+[Your Task]
+Based on all the given information above about the download context and routing rules purpose, make a decision. Your response only MUST be in one of the following decision, without any placeholder text:`;
+
+    return { systemPrompt, userPrompt };
+}
+
+/**
+ * Placeholder function for making an API call to an LLM.
+ * @param {string} systemPrompt The system prompt for the LLM.
+ * @param {string} userPrompt The user prompt for the LLM.
+ * @returns {Promise<string>} The raw text response from the LLM.
+ */
+async function getLLMDecision(systemPrompt, userPrompt) {
+    // 1. Read the API Key, Endpoint, AND the Model name from storage.
+    const { llmApiKey, llmModelEndpoint, llmModel } = await chrome.storage.sync.get([
+        'llmApiKey', 
+        'llmModelEndpoint', 
+        'llmModel'
+    ]);
+
+    if (!llmApiKey) {
+        throw new Error("LLM API Key is not set.");
+    }
+    if (!llmModelEndpoint) {
+        throw new Error("LLM Model Endpoint URL is not set.");
+    }
+    // 2. Add a check to ensure the model name is not empty.
+    if (!llmModel) {
+        throw new Error("LLM Model name is not set in options.");
+    }
+
+    console.log(`Querying LLM at: ${llmModelEndpoint} with model: ${llmModel}`);
+
+    // This is a generic fetch example.
+    const response = await fetch(llmModelEndpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${llmApiKey}`
+        },
+        body: JSON.stringify({
+            model: llmModel,
+
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userPrompt }
+            ],
+            temperature: 0.1,
+        })
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        // Log the detailed error from the API for easier debugging.
+        console.error("LLM API Error Body:", errorBody);
+        throw new Error(`LLM API request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    // The path to the response text depends on the API.
+    // For OpenAI/Groq: data.choices[0].message.content
+    // For Gemini: data.candidates[0].content.parts[0].text
+    // This logic remains robust.
+    const llmResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || data.choices?.[0]?.message?.content;
+    
+    if (!llmResponse) {
+        console.error("LLM response format not recognized:", data);
+        throw new Error("Could not extract text from LLM response.");
+    }
+    
+    console.log("LLM Raw Response:", llmResponse);
+    return llmResponse;
+}
+
+/**
+ * Parses the LLM's string response to extract the decision.
+ * e.g., "{RULE_A || RULE_B}" -> ["RULE_A", "RULE_B"]
+ * e.g., "{NULL}" -> ["NULL"]
+ * @param {string} responseText The raw response from the LLM.
+ * @returns {string[] | null} An array of rule names or NULL, or null if parsing fails.
+ */
+function parseLLMResponse(responseText) {
+    const match = responseText.match(/{([^}]+)}/);
+    if (match && match[1]) {
+        // Split the content inside the curly braces by the separator
+        const parts = match[1].split('||');
+        
+        // Map over each part to clean it up
+        const cleanedParts = parts.map(part => {
+            // 1. Trim whitespace from both ends (e.g., "  'My Rule'  " -> "'My Rule'")
+            const trimmed = part.trim();
+            
+            // 2. Remove leading/trailing single or double quotes using a regular expression
+            // (e.g., "'My Rule'" -> "My Rule")
+            const unquoted = trimmed.replace(/^['"]|['"]$/g, '');
+            
+            return unquoted;
+        });
+        
+        console.log("Parsed and cleaned LLM decision:", cleanedParts); // Added for better debugging
+        return cleanedParts;
+    }
+    console.warn("Could not parse LLM response:", responseText);
+    return null; // Return null if format is incorrect
+}
+
+/**
+ * Gathers all relevant context (URLs, titles) for a download.
+ * Reuses logic from the original `analyzeDownload` and `analyzeUrls` functions.
+ * @param {chrome.downloads.DownloadItem} downloadItem
+ * @returns {Promise<{urls: string[], titles: string[]}>}
+ */
+async function gatherDownloadContext(downloadItem) {
+    let tabInfo = null;
+    let tabCacheData = [];
+
+    // 1. Try to find originating tab
+    if (downloadItem.initiator) {
+        try {
+            tabInfo = await getTabInfo(downloadItem.initiator);
+        } catch (error) { /* Ignore error, proceed without tabInfo */ }
+    }
+
+    // 2. If no originating tab found, use active tab
+    if (!tabInfo) {
+        const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
+        if (tabs.length > 0) {
+            tabInfo = { id: tabs[0].id, url: tabs[0].url, title: tabs[0].title };
+        }
+    }
+
+    // 3. Get cache data for current tab and parent tab
+    if (tabInfo?.id) {
+        const cache = await chrome.storage.local.get('keywordCache');
+        const keywordCache = cache.keywordCache || {};
+        tabCacheData = keywordCache[String(tabInfo.id)] || [];
+
+        if (tabCacheData.length < MAX_CACHE_PER_TAB && tabRelationships.has(tabInfo.id)) {
+            const parentTabId = tabRelationships.get(tabInfo.id);
+            const parentTabData = keywordCache[String(parentTabId)] || [];
+            if (parentTabData.length > 0) {
+                tabCacheData = [...tabCacheData, ...parentTabData]
+                    .sort((a, b) => b.timestamp - a.timestamp)
+                    .slice(0, MAX_CACHE_PER_TAB);
+            }
+        }
+    }
+    
+    // 4. Consolidate URLs and Titles
+    const urls = [downloadItem.url, downloadItem.referrer];
+    const titles = [];
+
+    if (tabInfo) {
+        urls.push(tabInfo.url);
+        titles.push(tabInfo.title);
+    }
+
+    if (tabCacheData?.length > 0) {
+        tabCacheData.forEach(cacheItem => {
+            if (cacheItem.url) urls.push(cacheItem.url);
+            if (cacheItem.title) titles.push(cacheItem.title);
+        });
+    }
+
+    const uniqueUrls = [...new Set(urls.filter(Boolean))];
+    const uniqueTitles = [...new Set(titles.filter(Boolean))];
+
+    return { urls: uniqueUrls, titles: uniqueTitles };
+}
+
+/**
+ * Acts on the parsed decision from the LLM.
+ * @param {string[]} decision - Array of rule names or "NULL".
+ * @param {chrome.downloads.DownloadItem} downloadItem
+ * @param {Array<Object>} enabledConfigs - The user's rule configurations.
+ */
+async function handleLLMDecision(decision, downloadItem, enabledConfigs) {
+    if (!decision || decision.length === 0) {
+        console.log("LLM decision was invalid or empty. Using default location.");
+        callSuggestSafely(downloadItem.id, {});
+        return;
+    }
+
+    // Case 1: Confident, single decision (or clear "no match")
+    if (decision.length === 1) {
+        const ruleName = decision[0];
+        if (ruleName === 'NULL') {
+            console.log("LLM Decision: No rule applies. Using default location.");
+            callSuggestSafely(downloadItem.id, {});
+            return;
+        }
+
+        const matchedConfig = enabledConfigs.find(c => c.name === ruleName);
+        if (matchedConfig) {
+            console.log(`LLM Decision: Confident match for "${ruleName}".`);
+            const suggestedFilename = getSuggestedFilename(downloadItem, matchedConfig);
+            callSuggestSafely(downloadItem.id, { filename: suggestedFilename, conflictAction: 'uniquify' });
+        } else {
+            console.warn(`LLM returned rule "${ruleName}" but it was not found in configs. Using default.`);
+            callSuggestSafely(downloadItem.id, {});
+        }
+        return;
+    }
+    
+    // Case 2: Ambiguous decision, show notification
+    console.log(`LLM Decision: Ambiguous, options are [${decision.join(', ')}]. Showing notification.`);
+    const notificationOptions = [];
+    
+    // Map rule names from LLM decision to full config objects
+    decision.forEach(ruleName => {
+        if (ruleName === 'NULL') {
+            // This will be handled by the default button
+            return; 
+        }
+        const config = enabledConfigs.find(c => c.name === ruleName);
+        if (config) {
+            // Create a mock match object for the notification system
+            notificationOptions.push({
+                name: config.name,
+                downloadPath: config.downloadPath,
+                matchPercentage: 99, // Use a high dummy value to show confidence
+                isLLMChoice: true
+            });
+        }
+    });
+
+    if (notificationOptions.length > 0) {
+        // Limit to 2 choices for the notification buttons
+        showDownloadPathNotification(downloadItem, notificationOptions.slice(0, 2));
+    } else {
+        // This can happen if the decision was e.g. ["NULL", "NON_EXISTENT_RULE"]
+        console.log("LLM provided ambiguous options but none were valid. Using default location.");
+        callSuggestSafely(downloadItem.id, {});
+    }
+}
+
+// =================================================================
+// END: LLM Integration Code
+// =================================================================
+
+
 chrome.runtime.onInstalled.addListener(() => {
     console.log("Download Organizer Extension installed");
-    // Initialize empty cache
     chrome.storage.local.set({ keywordCache: {} });
 });
 
@@ -25,71 +299,102 @@ chrome.tabs.onCreated.addListener((tab) => {
     }
 });
 
-
-// Listen for keyword analysis results from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "keywordAnalysis") {
         console.log("Received keyword analysis from tab:", sender.tab ? sender.tab.id : "no tab");
-        
-        // Get the current cache
         chrome.storage.local.get('keywordCache', function(data) {
             let cache = data.keywordCache || {};
             const tabId = sender.tab ? String(sender.tab.id) : message.tabId;
-            
-            // Initialize cache for this tab if it doesn't exist
             if (!cache[tabId]) {
                 cache[tabId] = [];
             }
-            
-            // Add new results to the cache
             cache[tabId].unshift({
                 url: message.url,
                 title: message.title,
                 results: message.results,
                 timestamp: Date.now()
             });
-            
-            // Keep only MAX_CACHE_PER_TAB entries per tab (FIFO)
             if (cache[tabId].length > MAX_CACHE_PER_TAB) {
                 cache[tabId] = cache[tabId].slice(0, MAX_CACHE_PER_TAB);
             }
-            
-            // Clean up any tabs that haven't been accessed in 24 hours
             const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
             for (const [cachedTabId, entries] of Object.entries(cache)) {
                 if (entries.length > 0 && entries[0].timestamp < oneDayAgo) {
                     delete cache[cachedTabId];
                 }
             }
-            
-            // Save updated cache
             chrome.storage.local.set({ keywordCache: cache });
             console.log("Updated keyword cache for tab:", tabId);
         });
     }
 });
 
+
+// MODIFIED onDeterminingFilename to call the new processDownload orchestrator
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     console.log("Download started:", downloadItem.filename, downloadItem.url);
 
     pendingDownloads.set(downloadItem.id, { downloadItem, suggest });
     suggestCallbacks.set(downloadItem.id, suggest);
 
+    // This calls the main orchestrator function
     processDownload(downloadItem).catch(error => {
         console.error("Error processing download:", error);
+        // Ensure suggest is always called on error
         callSuggestSafely(downloadItem.id, {});
     });
 
-    return true;
+    return true; // Keep the download in a pending state
 });
 
+/**
+ * Main orchestrator for processing a download.
+ * Decides whether to use the LLM or the original logic.
+ */
 async function processDownload(downloadItem) {
-    const { gameConfigs } = await chrome.storage.sync.get('gameConfigs');
-    if (!gameConfigs) {
+    const { gameConfigs, useLLM, llmApiKey, llmModelEndpoint } = await chrome.storage.sync.get([
+        'gameConfigs', 
+        'useLLM', 
+        'llmApiKey',
+        'llmModelEndpoint'
+    ]);
+    
+    const enabledConfigs = gameConfigs?.filter(c => c.enabled) || [];
+
+    if (!enabledConfigs || enabledConfigs.length === 0) {
+        console.log("No enabled routing rules. Using default download location.");
         callSuggestSafely(downloadItem.id, {});
         return;
     }
 
+    // --- LLM PATH ---
+    if (useLLM && llmApiKey && llmModelEndpoint) {
+        console.log("Using LLM for decision...");
+        try {
+            const context = await gatherDownloadContext(downloadItem);
+            const { systemPrompt, userPrompt } = createLLMMessages(downloadItem, context, enabledConfigs);
+            const llmRawResponse = await getLLMDecision(systemPrompt, userPrompt);
+            const decision = parseLLMResponse(llmRawResponse);
+            await handleLLMDecision(decision, downloadItem, enabledConfigs);
+        } catch (error) {
+            console.error("LLM decision process failed. Falling back to original logic.", error);
+            await processDownloadOriginalLogic(downloadItem, gameConfigs);
+        }
+    } 
+    // --- ORIGINAL LOGIC PATH ---
+    else {
+        if (useLLM) {
+            console.log("LLM is enabled, but API Key or Endpoint is missing. Falling back to original logic.");
+        }
+        console.log("Using original percentage-based logic for decision...");
+        await processDownloadOriginalLogic(downloadItem, gameConfigs);
+    }
+}
+
+/**
+ * Encapsulates the original, percentage-based matching logic.
+ */
+async function processDownloadOriginalLogic(downloadItem, gameConfigs) {
     const matchResults = await analyzeDownload(downloadItem, gameConfigs);
 
     if (matchResults.every(result => result.matchPercentage === 0)) {
@@ -138,16 +443,14 @@ async function analyzeDownload(downloadItem, gameConfigs) {
     const parsedConfigs = gameConfigs.map(config => ({
         ...config,
         keywordList: config.keywords.split(',').map(k => k.trim().toLowerCase())
-    }));
+    })).filter(c => c.enabled); // Ensure we only analyze enabled configs
 
-    // 1. Always check filename first
     const filenameResults = analyzeFilename(downloadItem.filename, parsedConfigs);
     const highFilenameMatch = filenameResults.find(r => r.filenameMatchPercentage >= MATCH_THRESHOLD);
     if (highFilenameMatch) {
         return filenameResults.sort((a, b) => b.filenameMatchPercentage - a.filenameMatchPercentage);
     }
 
-    // 2. Try to find originating tab
     let tabInfo = null;
     let tabCacheData = [];
     
@@ -160,7 +463,6 @@ async function analyzeDownload(downloadItem, gameConfigs) {
         }
     }
 
-    // 3. If no originating tab found, use active tab
     if (!tabInfo) {
         const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
         if (tabs.length > 0) {
@@ -169,20 +471,17 @@ async function analyzeDownload(downloadItem, gameConfigs) {
         }
     }
 
-    // 4. Get cache data for current tab
     if (tabInfo?.id) {
         const cache = await chrome.storage.local.get('keywordCache');
         tabCacheData = (cache.keywordCache && cache.keywordCache[String(tabInfo.id)]) || [];
         console.log(`Found ${tabCacheData.length} cached entries for tab ${tabInfo.id}`);
 
-        // 5. If not enough data, check parent tab
         if (tabCacheData.length < MAX_CACHE_PER_TAB && tabRelationships.has(tabInfo.id)) {
             const parentTabId = tabRelationships.get(tabInfo.id);
             const parentTabData = (cache.keywordCache && cache.keywordCache[String(parentTabId)]) || [];
             
             if (parentTabData.length > 0) {
                 console.log(`Adding ${parentTabData.length} entries from parent tab ${parentTabId}`);
-                // Combine with current tab's data (newest first)
                 tabCacheData = [...tabCacheData, ...parentTabData]
                     .sort((a, b) => b.timestamp - a.timestamp)
                     .slice(0, MAX_CACHE_PER_TAB);
@@ -190,12 +489,11 @@ async function analyzeDownload(downloadItem, gameConfigs) {
         }
     }
 
-    // 6. Analyze the combined data
     const urlResults = await analyzeUrls(
         downloadItem.url, 
         downloadItem.referrer, 
         tabInfo, 
-        [], // No browser history
+        [], 
         tabCacheData,
         parsedConfigs
     );
@@ -233,19 +531,16 @@ function analyzeFilename(filename, parsedConfigs) {
     return results;
 }
 
-// New function to analyze cached keyword data
 function analyzeKeywordData(keywordData, parsedConfigs) {
     const results = [];
     const totalMatchesPerConfig = {};
-    const zeroMatchCounts = {}; // Track how many pages have zero matches for each config
+    const zeroMatchCounts = {}; 
 
-    // Initialize data structures
     for (const config of parsedConfigs) {
         totalMatchesPerConfig[config.name] = 0;
         zeroMatchCounts[config.name] = 0;
     }
 
-    // 1. Aggregate Total Matches and Count Zero Matches
     for (const page of keywordData) {
         for (const config of parsedConfigs) {
             const configResult = page.results[config.name];
@@ -255,26 +550,22 @@ function analyzeKeywordData(keywordData, parsedConfigs) {
                     zeroMatchCounts[config.name]++;
                 }
             } else {
-                // If configResult is undefined (config not found on this page), count as a zero match
                 zeroMatchCounts[config.name]++;
             }
         }
     }
 
-    // 2. Calculate Grand Total
     let grandTotalMatches = 0;
     for (const configName in totalMatchesPerConfig) {
         grandTotalMatches += totalMatchesPerConfig[configName];
     }
 
-    // 3. Calculate and Apply Penalty
     for (const config of parsedConfigs) {
         const configTotalMatches = totalMatchesPerConfig[config.name];
         let contentMatchPercentage = grandTotalMatches > 0
             ? (configTotalMatches / grandTotalMatches) * 100
             : 0;
 
-        // Apply the penalty for zero matches
         const penaltyFactor = Math.pow(1.5, zeroMatchCounts[config.name]);
         contentMatchPercentage /= penaltyFactor;
 
@@ -288,7 +579,7 @@ function analyzeKeywordData(keywordData, parsedConfigs) {
             urlMatchPercentage: 0,
             titleMatchPercentage: 0,
             filenameMatchPercentage: 0,
-            zeroMatchPages: zeroMatchCounts[config.name] // For debugging/info
+            zeroMatchPages: zeroMatchCounts[config.name]
         });
     }
 
@@ -296,13 +587,11 @@ function analyzeKeywordData(keywordData, parsedConfigs) {
 }
 
 function combineResults(filenameResults, otherResults) {
-    const combined = [...filenameResults]; // Start with filename results
+    const combined = [...filenameResults]; 
 
-    // Merge other results, updating matchPercentage if necessary
     for (const otherResult of otherResults) {
         const existing = combined.find(r => r.name === otherResult.name);
         if (existing) {
-            // Update percentages and take the max for each metric
             existing.urlMatchPercentage = Math.max(existing.urlMatchPercentage, otherResult.urlMatchPercentage || 0);
             existing.titleMatchPercentage = Math.max(existing.titleMatchPercentage, otherResult.titleMatchPercentage || 0);
             existing.contentMatchPercentage = Math.max(existing.contentMatchPercentage, otherResult.contentMatchPercentage || 0);
@@ -321,7 +610,6 @@ function combineResults(filenameResults, otherResults) {
 
 async function getTabInfo(initiator) {
     return new Promise((resolve, reject) => {
-        // Try to find the tab based on the initiator URL
         chrome.tabs.query({}, (tabs) => {
             const matchedTab = tabs.find(tab => tab.url && initiator && tab.url.startsWith(initiator.split('?')[0]));
 
@@ -330,7 +618,6 @@ async function getTabInfo(initiator) {
                 return;
             }
 
-            // Get the title
             chrome.scripting.executeScript({
                 target: { tabId: matchedTab.id },
                 func: () => document.title,
@@ -367,9 +654,6 @@ async function injectContentScript(tabId, initiator) {
         });
     });
 }
-
-
-
 async function getRecentHistory(count) {
     return new Promise((resolve) => {
         chrome.history.search({
@@ -389,9 +673,7 @@ async function getRecentHistory(count) {
             resolve(itemsWithIds);
         });
     });
-}
-
-async function analyzeUrls(url, referrer, tabInfo, historyItems, tabCacheData, parsedConfigs) {
+}async function analyzeUrls(url, referrer, tabInfo, historyItems, tabCacheData, parsedConfigs) {
     // Start with base URLs
     const urls = [url, referrer];
     
@@ -485,72 +767,68 @@ async function analyzeUrls(url, referrer, tabInfo, historyItems, tabCacheData, p
 }
 
 function showDownloadPathNotification(downloadItem, options) {
-    if (options.length > 0 && (options[0].matchPercentage >= MATCH_THRESHOLD)) {
-        // No notification if a high match.
-        processDownloadChoice(downloadItem.id, 0);
-        return;
-    }
-
     try {
+        const buttons = [
+            ...(options.length > 0 ? [{ title: `${options[0].name} (${Math.round(options[0].matchPercentage)}%)` }] : []),
+            ...(options.length > 1 ? [{ title: `${options[1].name} (${Math.round(options[1].matchPercentage)}%)` }] : []),
+            { title: 'Use Default Folder' }
+        ];
+
         chrome.notifications.create({
             type: 'basic',
             iconUrl: 'icons/icon48.png',
             title: 'Choose Download Location',
             message: `Where would you like to save "${downloadItem.filename.split('/').pop()}"?`,
-            buttons: [
-                ...(options.length > 0 ? [{ title: `${options[0].name} (${Math.round(options[0].matchPercentage)}%)` }] : []),
-                ...(options.length > 1 ? [{ title: `${options[1].name} (${Math.round(options[1].matchPercentage)}%)` }] : []),
-                { title: 'Use Default Folder' }
-            ],
+            buttons: buttons,
             requireInteraction: true
         }, (notificationId) => {
             if (chrome.runtime.lastError) {
                 console.error("Error creating notification:", chrome.runtime.lastError.message);
-                processDownloadChoice(downloadItem.id, null); // Fallback
+                processDownloadChoice(downloadItem.id, null, options);
                 return;
             }
             downloadNotifications.set(notificationId, { downloadId: downloadItem.id, options });
+            
             setTimeout(() => {
-                try {
-                    chrome.notifications.clear(notificationId, () => {
-                        if (chrome.runtime.lastError) { console.log("Notification already closed:", chrome.runtime.lastError.message); }
+                chrome.notifications.clear(notificationId, (wasCleared) => {
+                    if (chrome.runtime.lastError) { return; }
+                    if (wasCleared) {
                         const notificationInfo = downloadNotifications.get(notificationId);
-                        if (notificationInfo) { 
-                            processDownloadChoice(notificationInfo.downloadId, null); 
-                            downloadNotifications.delete(notificationId); 
+                        if (notificationInfo) {
+                            console.log("Notification timed out. Using default location.");
+                            processDownloadChoice(notificationInfo.downloadId, null, notificationInfo.options);
+                            downloadNotifications.delete(notificationId);
                         }
-                    });
-                } catch (error) { console.error("Error clearing notification:", error); }
+                    }
+                });
             }, NOTIFICATION_TIMEOUT);
         });
     } catch (error) {
         console.error("Error showing notification:", error);
-        processDownloadChoice(downloadItem.id, null); // Fallback to default
+        processDownloadChoice(downloadItem.id, null, options);
     }
 }
 
-async function processDownloadChoice(downloadId, chosenIndex) {
+async function processDownloadChoice(downloadId, chosenIndex, options) {
     const pendingDownload = pendingDownloads.get(downloadId);
     if (!pendingDownload) {
         console.log(`Pending download with ID ${downloadId} not found.`);
         return;
     }
 
-    const { downloadItem } = pendingDownload;
-    const { gameConfigs } = await chrome.storage.sync.get('gameConfigs');
-    const matchResults = await analyzeDownload(downloadItem, gameConfigs);
     pendingDownloads.delete(downloadId);
+    const { downloadItem } = pendingDownload;
 
-    if (chosenIndex === null || chosenIndex === undefined || !matchResults) {
+    if (chosenIndex === null || chosenIndex === undefined || !options) {
         console.log(`ProcessDownloadChoice: Default location chosen.`);
         callSuggestSafely(downloadId, {});
-    } else if (matchResults[chosenIndex]) {
-        const chosen = matchResults[chosenIndex];
+    } else if (options[chosenIndex]) {
+        const chosen = options[chosenIndex];
         console.log(`ProcessDownloadChoice: User chose option ${chosenIndex}: ${chosen.name}`);
         const suggestedFilename = getSuggestedFilename(downloadItem, chosen);
         callSuggestSafely(downloadId, { filename: suggestedFilename, conflictAction: 'uniquify' });
     } else {
-        console.log(`ProcessDownloadChoice: Invalid chosenIndex ${chosenIndex} or matchResults missing.`);
+        console.log(`ProcessDownloadChoice: Invalid chosenIndex ${chosenIndex} or options missing.`);
         callSuggestSafely(downloadId, {});
     }
 }
@@ -558,40 +836,38 @@ async function processDownloadChoice(downloadId, chosenIndex) {
 chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
     const notificationInfo = downloadNotifications.get(notificationId);
     if (!notificationInfo) { return; }
-
-    // Handle button clicks: 0 and 1 are custom options, 2 is "Use Default"
-    if (buttonIndex === 2) {
-        processDownloadChoice(notificationInfo.downloadId, null); // Default
+    
+    const isDefaultButton = buttonIndex >= notificationInfo.options.slice(0, 2).length;
+    if (isDefaultButton) {
+        processDownloadChoice(notificationInfo.downloadId, null, notificationInfo.options);
     } else {
-        processDownloadChoice(notificationInfo.downloadId, buttonIndex); // Custom choice
+        processDownloadChoice(notificationInfo.downloadId, buttonIndex, notificationInfo.options);
     }
 
-    try {
-        chrome.notifications.clear(notificationId, () => {
-            if (chrome.runtime.lastError) { console.log("Notification already closed:", chrome.runtime.lastError.message); }
-            downloadNotifications.delete(notificationId); // Clean up
-        });
-    } catch (error) { console.error("Error clearing notification:", error); }
+    chrome.notifications.clear(notificationId, () => {
+        if (chrome.runtime.lastError) { /* ignore */ }
+        downloadNotifications.delete(notificationId);
+    });
 });
 
 chrome.notifications.onClicked.addListener((notificationId) => {
     const notificationInfo = downloadNotifications.get(notificationId);
     if (!notificationInfo) { return; }
-    processDownloadChoice(notificationInfo.downloadId, null); // Treat click as "Use Default"
+    processDownloadChoice(notificationInfo.downloadId, null, notificationInfo.options);
     chrome.notifications.clear(notificationId, () => {
-        if (chrome.runtime.lastError) { console.log("Notification already closed:", chrome.runtime.lastError.message); }
+        if (chrome.runtime.lastError) { /* ignore */ }
         downloadNotifications.delete(notificationId);
     });
 });
 
-chrome.notifications.onClosed.addListener((notificationId) => {
+chrome.notifications.onClosed.addListener((notificationId, byUser) => {
+    if (!byUser) return; 
     const notificationInfo = downloadNotifications.get(notificationId);
     if (!notificationInfo) { return; }
-    processDownloadChoice(notificationInfo.downloadId, null);
+    processDownloadChoice(notificationInfo.downloadId, null, notificationInfo.options);
     downloadNotifications.delete(notificationId);
 });
 
-// Inject the content script into tabs when they are updated
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab.url && 
         !tab.url.startsWith('chrome://') && 
@@ -608,7 +884,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
 });
 
-// Remove cache from tab when it's closed
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     chrome.storage.local.get('keywordCache', (data) => {
         let cache = data.keywordCache || {};
@@ -621,7 +896,6 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     });
 });
 
-// Clean all cache when the extension is terminated (when the browser is closed)
 chrome.runtime.onSuspend.addListener(() => {
     chrome.storage.local.remove('keywordCache', () => {
         console.log("Cleaned.");
