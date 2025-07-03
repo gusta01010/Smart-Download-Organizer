@@ -1,6 +1,5 @@
-// popup.js
 document.addEventListener('DOMContentLoaded', function() {
-  // UI elements
+  // UI elements - Main
   const configsContainer = document.getElementById('configs-container');
   const addConfigButton = document.getElementById('add-config');
   const saveButton = document.getElementById('save-configs');
@@ -10,21 +9,45 @@ document.addEventListener('DOMContentLoaded', function() {
   const backToSettingsButton = document.getElementById('back-to-settings');
   const themeToggle = document.getElementById('theme-toggle');
   
+  // UI elements - LLM
+  const llmSettingsBtn = document.getElementById('llm-settings-btn');
+  const llmInterface = document.getElementById('llm-interface');
+  const backToMainBtn = document.getElementById('back-to-main-btn');
+  const saveLlmSettingsBtn = document.getElementById('save-llm-settings-btn');
+  const llmEnabledToggle = document.getElementById('llm-enabled-toggle');
+  
+  // These IDs now match your HTML exactly
+  const llmApiUrlInput = document.getElementById('llm-api-url');
+  const llmApiKeyInput = document.getElementById('llm-api-key');
+  const llmModelInput = document.getElementById('llm-model'); // Re-added to match your HTML
+
   let gameConfigs = [];
   let darkMode = false;
   
-  // Initialize theme
-  chrome.storage.sync.get(['darkMode', 'gameConfigs'], function(data) {
+  // Fetch all settings, including the 'llmModel' to populate the form
+  chrome.storage.sync.get([
+    'darkMode', 
+    'gameConfigs', 
+    'useLLM', 
+    'llmApiKey', 
+    'llmModelEndpoint',
+    'llmModel' // Fetch the saved model name
+  ], function(data) {
+    // Theme
     darkMode = data.darkMode || false;
     updateTheme();
     
-    if (data.gameConfigs && data.gameConfigs.length > 0) {
-      gameConfigs = data.gameConfigs;
-      renderConfigs();
-    } else {
-      gameConfigs = [];
-      renderConfigs();
-    }
+    // Keyword Configs
+    gameConfigs = data.gameConfigs || [];
+    renderConfigs();
+
+    // Load LLM settings
+    llmEnabledToggle.checked = data.useLLM || false;
+    // The background.js uses 'llmModelEndpoint', so we load from that key
+    llmApiUrlInput.value = data.llmModelEndpoint || ''; 
+    llmApiKeyInput.value = data.llmApiKey || '';
+    // Populate the model input field
+    llmModelInput.value = data.llmModel || '';
   });
   
   // Theme toggle
@@ -41,7 +64,7 @@ document.addEventListener('DOMContentLoaded', function() {
       'https://www.pngall.com/wp-content/uploads/5/Black-Crescent-Moon-PNG.png'})`;
   }
   
-  // Create HTML for each game config
+  // Create HTML for each game config (This function remains unchanged)
   function renderConfigs() {
     configsContainer.innerHTML = '';
     
@@ -78,7 +101,6 @@ document.addEventListener('DOMContentLoaded', function() {
       
       configsContainer.appendChild(configDiv);
       
-      // Add event listener to toggle switch
       const toggle = configDiv.querySelector('.toggle-switch input');
       toggle.addEventListener('change', function() {
         gameConfigs[index].enabled = this.checked;
@@ -87,7 +109,6 @@ document.addEventListener('DOMContentLoaded', function() {
       });
     });
     
-    // Add event listeners to remove buttons
     document.querySelectorAll('.remove-btn').forEach(button => {
       button.addEventListener('click', function() {
         const index = parseInt(this.getAttribute('data-index'));
@@ -97,7 +118,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
-  // Add new config
+  // Add new config (This function remains unchanged)
   addConfigButton.addEventListener('click', function() {
     gameConfigs.push({
       name: '',
@@ -108,9 +129,8 @@ document.addEventListener('DOMContentLoaded', function() {
     renderConfigs();
   });
   
-  // Save configs
+  // Save keyword-based configs (This function remains unchanged)
   saveButton.addEventListener('click', function() {
-    // Update configs from form values
     const gameNameInputs = document.querySelectorAll('.game-name');
     const keywordsInputs = document.querySelectorAll('.keywords');
     const downloadPathInputs = document.querySelectorAll('.download-path');
@@ -118,7 +138,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const updatedConfigs = [];
     
     for (let i = 0; i < gameNameInputs.length; i++) {
-      // Ensure download paths end with a slash
       let downloadPath = downloadPathInputs[i].value.trim();
       if (downloadPath && !downloadPath.endsWith('/') && !downloadPath.endsWith('\\')) {
         downloadPath += '/';
@@ -134,23 +153,40 @@ document.addEventListener('DOMContentLoaded', function() {
     
     gameConfigs = updatedConfigs;
     
-    // Save to storage
     chrome.storage.sync.set({ gameConfigs }, function() {
-      const saveMessage = document.createElement('div');
-      saveMessage.textContent = 'Settings saved!';
-      saveMessage.style.color = 'green';
-      saveMessage.style.padding = '10px';
-      saveMessage.style.textAlign = 'center';
+      showSaveMessage(saveButton, 'Settings saved!');
+    });
+  });
+
+  // --- LLM Settings Logic ---
+  llmSettingsBtn.addEventListener('click', () => {
+    mainInterface.style.display = 'none';
+    llmInterface.style.display = 'block';
+  });
+
+  backToMainBtn.addEventListener('click', () => {
+    llmInterface.style.display = 'none';
+    mainInterface.style.display = 'block';
+  });
+
+  // Save LLM settings
+  saveLlmSettingsBtn.addEventListener('click', () => {
+    chrome.storage.sync.set({
+      // Keys used by background.js
+      useLLM: llmEnabledToggle.checked,
+      llmModelEndpoint: llmApiUrlInput.value.trim(), // The input with id 'llm-api-url' saves to 'llmModelEndpoint'
+      llmApiKey: llmApiKeyInput.value.trim(),
       
-      saveButton.insertAdjacentElement('afterend', saveMessage);
-      
-      setTimeout(() => {
-        saveMessage.remove();
-      }, 2000);
+      // We also save the model name, even if background.js doesn't use it yet.
+      // This is good practice for future-proofing.
+      llmModel: llmModelInput.value.trim()
+
+    }, () => {
+        showSaveMessage(saveLlmSettingsBtn, 'LLM settings saved!');
     });
   });
   
-  // Show/hide help section
+  // --- Help Section Logic (This section remains unchanged) ---
   showHelpButton.addEventListener('click', function() {
     mainInterface.style.display = 'none';
     helpSection.style.display = 'block';
@@ -160,4 +196,25 @@ document.addEventListener('DOMContentLoaded', function() {
     helpSection.style.display = 'none';
     mainInterface.style.display = 'block';
   });
+
+  // --- Utility Functions (This section remains unchanged) ---
+  function showSaveMessage(buttonElement, message) {
+    const existingMessage = buttonElement.nextElementSibling;
+    if (existingMessage && existingMessage.classList.contains('save-message')) {
+        existingMessage.remove();
+    }
+      
+    const saveMessage = document.createElement('div');
+    saveMessage.className = 'save-message';
+    saveMessage.textContent = message;
+    saveMessage.style.color = 'green';
+    saveMessage.style.padding = '10px';
+    saveMessage.style.textAlign = 'center';
+    
+    buttonElement.insertAdjacentElement('afterend', saveMessage);
+    
+    setTimeout(() => {
+      saveMessage.remove();
+    }, 2000);
+  }
 });
