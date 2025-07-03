@@ -16,6 +16,8 @@
       --light-save-hover: #45a049;
       --light-remove-bg: #ff4444;
       --light-remove-hover: #cc0000;
+      --light-llm-bg: #ff9800;
+      --light-llm-hover: #f57c00;
       
       --dark-bg: #1e1e1e;
       --dark-text: #e0e0e0;
@@ -29,6 +31,8 @@
       --dark-save-hover: #1B5E20;
       --dark-remove-bg: #c62828;
       --dark-remove-hover: #b71c1c;
+      --dark-llm-bg: #e65100;
+      --dark-llm-hover: #bf360c;
     }
     
     body {
@@ -116,7 +120,7 @@
       background-color: var(--dark-button-bg);
     }
     
-    .config-section {
+    .config-section, .llm-section {
       margin: 10px 0;
       border: 1px solid var(--light-box-border);
       border-radius: 8px;
@@ -124,7 +128,7 @@
       transition: all 0.3s;
     }
     
-    body.dark-mode .config-section {
+    body.dark-mode .config-section, body.dark-mode .llm-section {
       border-color: var(--dark-box-border);
     }
     
@@ -280,6 +284,7 @@
     .footer {
       display: flex;
       justify-content: space-between;
+      gap: 10px;
       margin-top: 20px;
       padding-top: 15px;
       border-top: 1px solid var(--light-box-border);
@@ -289,48 +294,51 @@
       border-top-color: var(--dark-box-border);
     }
     
-    .add-btn {
-      padding: 8px 15px;
-      background: var(--light-button-bg);
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-weight: bold;
-      transition: background-color 0.2s;
+    .btn {
+        padding: 8px 15px;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: background-color 0.2s;
     }
-    
+
+    .add-btn {
+      background: var(--light-button-bg);
+    }
     body.dark-mode .add-btn {
       background: var(--dark-button-bg);
     }
-    
     .add-btn:hover {
       background: var(--light-button-hover);
     }
-    
     body.dark-mode .add-btn:hover {
       background: var(--dark-button-hover);
     }
-    
-    .save-btn {
-      padding: 8px 15px;
-      background: var(--light-save-bg);
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-weight: bold;
-      transition: background-color 0.2s;
+
+    .llm-btn {
+        background: var(--light-llm-bg);
+    }
+    body.dark-mode .llm-btn {
+        background: var(--dark-llm-bg);
+    }
+    .llm-btn:hover {
+        background: var(--light-llm-hover);
+    }
+    body.dark-mode .llm-btn:hover {
+        background: var(--dark-llm-hover);
     }
     
+    .save-btn {
+      background: var(--light-save-bg);
+    }
     body.dark-mode .save-btn {
       background: var(--dark-save-bg);
     }
-    
     .save-btn:hover {
       background: var(--light-save-hover);
     }
-    
     body.dark-mode .save-btn:hover {
       background: var(--dark-save-hover);
     }
@@ -428,69 +436,77 @@
     <div id="configs-container"></div>
     
     <div class="footer">
-      <button id="add-config" class="add-btn">Add New Configuration</button>
-      <button id="save-configs" class="save-btn">Save Settings</button>
+      <button id="add-config" class="btn add-btn">Add New Configuration</button>
+      <button id="llm-settings-btn" class="btn llm-btn">LLM Settings</button>
+      <button id="save-configs" class="btn save-btn">Save Settings</button>
+    </div>
+  </div>
+
+  <div id="llm-interface" style="display: none;">
+    <div class="header">
+        <h2>LLM Settings</h2>
+    </div>
+    <div class="llm-section">
+        <div class="config-header">
+            <h3 class="config-title">Enable LLM-based Sorting</h3>
+            <div class="toggle-container">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="llm-enabled-toggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+        <div class="config-content">
+            <div class="form-group">
+                <label for="llm-api-url">API URL:</label>
+                <input type="text" id="llm-api-url" placeholder="e.g., https://api.groq.com/openai/v1/chat/completions">
+            </div>
+            <div class="form-group">
+                <label for="llm-api-key">API Key:</label>
+                <input type="text" id="llm-api-key" placeholder="Enter your API key">
+            </div>
+            <div class="form-group">
+                <label for="llm-model">Model:</label>
+                <input type="text" id="llm-model" placeholder="e.g., llama3-8b-8192">
+            </div>
+        </div>
+    </div>
+    <div class="footer">
+        <button id="back-to-main-btn" class="btn add-btn">Back</button>
+        <button id="save-llm-settings-btn" class="btn save-btn">Save LLM Settings</button>
     </div>
   </div>
 
   <div id="help-section" class="help-section">
     <h2>How to Use This Extension</h2>
-
     <h3>Quick Start</h3>
     <p>This extension automatically redirects downloads to specific folders based on the keywords and criteria you define. Sorting is done automatically.</p>
-
     <h3>Setting Up Custom Folders</h3>
     <ol>
       <li>Click "Add New Configuration" to create a new rule.</li>
       <li>Enter a descriptive name for this rule (e.g., "Minecraft Mods", "Blender Assets", "Design Documents").</li>
-      <li>Set the download path where matching downloads should be saved (e.g., <code>C:\Games\.Minecraft\mods\</code>, <code>D:\Assets\Blender\</code>, <code>E:\Projects\ClientA\Docs\</code>). <strong style="color: red;">Important: Ensure this path is on the SAME DRIVE as your default download folder.</strong></li>
+      <li>Set the download path where matching downloads should be saved (e.g., <code>C:\Games\.Minecraft\mods\</code>). <strong style="color: red;">Important: Ensure this path is on the SAME DRIVE as your default download folder.</strong></li>
       <li>Click "Save Settings" to apply your changes.</li>
     </ol>
-
     <h3>Configuring Keywords</h3>
-    <p>Keywords help the extension identify where a download should be saved:</p>
-    <ul>
-      <li>Add multiple keywords, separated by commas.</li>
-      <li>Examples:</li>
-        <ul>
-          <li>For Minecraft 1.12.2 mods: <code>1.12.2</code></li>
-          <li>For The Sims 4 mods: <code>the sims 4, ts4, thesims4, thesims</code></li>
-          <li>For Blender assets: <code>blender, asset, 3d model</code></li>
-          <li>For PDFs related to "Project Alpha": <code>Project Alpha, report, documentation, pdf</code></li>
-        </ul>
-    </ul>
-
+    <p>Keywords help the extension identify where a download should be saved. They are used in "Classic Mode" and also help guide the "LLM Mode".</p>
     <h3>How Matching Works</h3>
-    <p>When you download a file, the extension checks the following, in order:</p>
+    <p>You can choose between two modes in the settings:</p>
     <ol>
-      <li><strong>Filename:</strong> It first checks the filename for your keywords. If a strong match is found here (above 75%), the file is immediately saved to the specified folder.</li>
-      <li><strong>Page Title:</strong> If the filename doesn't provide a strong match, the extension checks the title of the webpage where the download started.  A strong title match (above 60%) will redirect the download.</li>
-      <li><strong>URL:</strong> Next, it examines the download URL, the referrer URL (the page linking to the download), and URLs from your recent browsing history, looking for keywords.</li>
-      <li><strong>Page Content:</strong> Finally, if no strong matches are found, the extension analyzes the content of the webpage where the download started (or pages from your recent browsing history).</li>
-      <li><strong>Confidence Score:</strong>  A score is calculated for each configuration based on these checks.</li>
-      <li><strong>Redirection:</strong>
-        <ul>
-            <li>If the best match's score is high enough (based on the checks above), the download goes to the configured folder.</li>
-            <li>If the score is below the threshold but a match is still found, you'll get a notification suggesting a folder. Click to confirm, or ignore to use the default location.</li>
-            <li>If no matches are found, the file goes to your default downloads folder.</li>
-        </ul>
-      </li>
+      <li><strong>Classic Mode (Default):</strong> Uses a score-based system on filename, page title, URL, and page content to find keyword matches.</li>
+      <li><strong>LLM Mode (Advanced):</strong> Sends the filename, recent URLs, and page titles to an AI model (like GPT or Llama) for a smart decision. This requires setting up an API key in the "LLM Settings".</li>
     </ol>
-
     <h3>Troubleshooting</h3>
     <p><strong>Downloads not redirecting?</strong></p>
     <ul>
-      <li>Make sure your download paths are valid, end with a slash (<code>\</code> or <code>/</code>), and include the drive letter (e.g., <code>E:\Folder\</code>).  <strong style="color:red;">They MUST be on the same drive as your default download folder.</strong></li>
-      <li>Add more specific keywords for better matching.</li>
-      <li>Ensure your keywords are relevant to the files you're trying to organize.</li>
+      <li>Make sure your download paths are valid and end with a slash (<code>\</code> or <code>/</code>).</li>
+      <li>In Classic Mode, add more specific keywords.</li>
+      <li>In LLM Mode, ensure your API Key and URL are correct in the settings. Check the extension's Service Worker console for errors.</li>
     </ul>
-
     <h3>Tips</h3>
     <ul>
       <li><b>Pro Tip: Avoid using generalized words that are commonly found on websites, such as "its", "car", or other common nouns.</b></li>
       <li><b>Pro Tip: NEVER use the same keyword in different configurations.</b></li>
-      <li>More specific keywords yield better results.</li>
-      <li>Check the browser console (F12) for troubleshooting logs (errors or informational messages).</li>
     </ul>
     This project will be open source forever, you are free to check it out more on <a href="https://github.com/gusta01010/Smart-Download-Organizer">https://github.com/gusta01010/Smart-Download-Organizer</a><br>Also a big credit to Pixel perfect for the extension icon: <a href="https://www.flaticon.com/free-icons/download" title="download icons">Download icons created by Pixel perfect - Flaticon</a><br>
     <button id="back-to-settings" class="back-to-settings">Back to Settings</button>
