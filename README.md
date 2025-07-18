@@ -39,12 +39,20 @@ The extension analyzes downloads in a specific order, prioritizing certain infor
     *   **URL:** If neither the filename nor the title provides a strong match, the extension examines the download URL, the referrer URL (the page that linked to the download), and URLs from your recent browsing history.  It checks these URLs for your keywords.
     *   **Page Content:** Finally, if no strong matches are found in the filename, title, or URL, the extension analyzes the *content* of the webpage that initiated the download (or pages from your recent history if the initiating page can't be accessed).  This is the most resource-intensive check, so it's done last.
 
-4.  **Scoring:** Each configuration gets a score based on how well it matches the download, considering the filename, title, URL, and content (each with its own threshold).
-
-5.  **Redirection:**
+4.  **Scoring (non-LLM):** Each configuration gets a score based on how well it matches the download, considering the filename, title, URL, and content (each with its own threshold).
+    *   **Redirection (non-LLM):**
     *   **High Score:** If the best match (considering all criteria) is above a certain level, the download is automatically moved to the specified folder.
     *   **Medium Score:** If it's below that level, you get a notification suggesting the folder. Click to confirm or ignore to save to the default location.
     *   **No Match:** If nothing matches, the file goes to your usual downloads folder.
+  
+5.  **Scoring (LLM):** Highly experimental, AI receives every information available from the download above in **Matching** and decides which choice is the best for the downloaded file.
+    *   **Redirection (LLM):**
+    *   **{RULE_NAME_A | RULE_NAME_B}** If AI returns RULE_NAME A or RULE_NAME_B, it means there's a potential rule conflict and will offer you these two possible locations to save the file.
+    *   **{NULL | RULE_NAME}** If AI returns NULL or RULE_NAME, it means is unsure between default and an existing rule location to save, showing a notification to make user decide.
+    *   **{NULL}** If AI returns NULL, it means the download didn't match any set rule, saving in default downloads folder.
+
+
+
 
 ## Getting Started
 
